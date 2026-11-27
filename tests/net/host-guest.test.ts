@@ -395,6 +395,32 @@ describe('生存確認とつかみ（KTD6, KTD10）', () => {
     expect(host.getState().heldBy[pieceId]).toBe(2);
   });
 
+  it('サイコロの動きの記録はホストと全参加者に届き、参加者が送った出目は使われない', async () => {
+    host.close();
+    net = createMemoryNetwork();
+    hostAssets = new AssetStore();
+    host = new HostSession({
+      transport: net.host,
+      assets: hostAssets,
+      rng: seededRng(7),
+      rollDice: () => ({ value: 4, keyframes: [0, 0, 1, 0, 0, 0, 0, 1] }),
+    });
+    host.submit({ type: 'spawnDie', placement: origin });
+    const dieId = Object.keys(host.getState().objects)[0]!;
+    const a = await addGuest('A');
+    const b = await addGuest('B');
+    await sit(a, 1);
+    const bRolls: unknown[] = [];
+    const hostRolls: unknown[] = [];
+    b.g.onDiceRoll((id, kf) => bRolls.push({ id, kf }));
+    host.onDiceRoll((id, kf) => hostRolls.push({ id, kf }));
+    a.g.submit({ type: 'roll', dieId, outcome: { value: 6 } });
+    await flush();
+    expect(bRolls).toEqual([{ id: dieId, kf: [0, 0, 1, 0, 0, 0, 0, 1] }]);
+    expect(hostRolls).toHaveLength(1);
+    expect(host.getState().objects[dieId]).toMatchObject({ value: 4 });
+  });
+
   it('ホスト自身のドラッグ位置は参加者に届き、ホスト自身には返らない', async () => {
     host.submit({ type: 'spawnPiece', shape: 'cube', color: '#f00', placement: origin });
     const pieceId = Object.keys(host.getState().objects)[0]!;

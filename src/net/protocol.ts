@@ -28,6 +28,8 @@ export type HostToGuest =
   | { type: 'log'; text: string }
   | { type: 'chat'; from: string; text: string }
   | { type: 'drag'; objId: ObjectId; pos: Vec3; seat: SeatId }
+  /** サイコロの動きの記録（KTD7）。全員が同じ転がり方を再生する。 */
+  | { type: 'diceRoll'; dieId: ObjectId; keyframes: number[] }
   | { type: 'error'; cmdId?: string; reason: string }
   | { type: 'seats'; seats: SeatInfo[]; assignmentPending: boolean }
   | { type: 'roomFull' }

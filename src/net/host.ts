@@ -75,6 +75,7 @@ export class HostSession {
   private readonly seatsEv = new Emitter<[SeatInfo[], boolean]>();
   private readonly noticeEv = new Emitter<[string]>();
   private readonly dragEv = new Emitter<[ObjectId, Vec3, SeatId]>();
+  private readonly diceEv = new Emitter<[ObjectId, number[]]>();
   private readonly cmdErrorEv = new Emitter<[string]>();
 
   constructor(private readonly opts: HostSessionOptions) {
@@ -105,6 +106,9 @@ export class HostSession {
   }
   onNotice(cb: (text: string) => void): () => void {
     return this.noticeEv.on(cb);
+  }
+  onDiceRoll(cb: (dieId: ObjectId, keyframes: number[]) => void): () => void {
+    return this.diceEv.on(cb);
   }
   onRemoteDrag(cb: (objId: ObjectId, pos: Vec3, seat: SeatId) => void): () => void {
     return this.dragEv.on(cb);
@@ -419,6 +423,14 @@ export class HostSession {
     if (!r.ok) return r;
     this.state = r.state;
     this.syncGrabTimes();
+    // 転がる動きを先に送り、出目の反映（View）が後から届くようにする。
+    const keyframes = cmd.type === 'roll' ? cmd.outcome?.keyframes : undefined;
+    if (cmd.type === 'roll' && keyframes) {
+      for (const p of this.peers.values()) {
+        if (p.joined) this.send(p, { type: 'diceRoll', dieId: cmd.dieId, keyframes });
+      }
+      this.diceEv.emit(cmd.dieId, keyframes);
+    }
     this.broadcast(r.log);
     return { ok: true };
   }

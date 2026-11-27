@@ -72,6 +72,7 @@ export class GuestSession {
   private readonly seatsEv = new Emitter<[SeatInfo[], boolean]>();
   private readonly errorEv = new Emitter<[string, string | undefined]>();
   private readonly dragEv = new Emitter<[ObjectId, Vec3, SeatId]>();
+  private readonly diceEv = new Emitter<[ObjectId, number[]]>();
   private readonly statusEv = new Emitter<[GuestStatus, ConnectionFailure | undefined]>();
 
   constructor(private readonly opts: GuestSessionOptions) {}
@@ -91,6 +92,9 @@ export class GuestSession {
   }
   onError(cb: (reason: string, cmdId?: string) => void): () => void {
     return this.errorEv.on(cb);
+  }
+  onDiceRoll(cb: (dieId: ObjectId, keyframes: number[]) => void): () => void {
+    return this.diceEv.on(cb);
   }
   onRemoteDrag(cb: (objId: ObjectId, pos: Vec3, seat: SeatId) => void): () => void {
     return this.dragEv.on(cb);
@@ -328,6 +332,8 @@ export class GuestSession {
         return this.chatEv.emit(msg.from, msg.text);
       case 'drag':
         return this.dragEv.emit(msg.objId, msg.pos, msg.seat);
+      case 'diceRoll':
+        return this.diceEv.emit(msg.dieId, msg.keyframes);
       case 'error':
         if (msg.reason === 'replaced') return this.terminate('closed');
         return this.errorEv.emit(msg.reason, msg.cmdId);
