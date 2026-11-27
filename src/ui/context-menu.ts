@@ -15,6 +15,8 @@ export type MenuAction =
 export interface MenuItem {
   label: string;
   action: MenuAction;
+  /** 取り返しのつかない操作（危険な見た目で出す） */
+  danger?: boolean;
 }
 
 export interface MenuContext {
@@ -26,7 +28,11 @@ export interface MenuContext {
 const DELETE_CONFIRM = '卓から消します。元に戻せません。よろしいですか？';
 
 function del(id: string): MenuItem {
-  return { label: '消す', action: { kind: 'command', body: { type: 'delete', objId: id }, confirm: DELETE_CONFIRM } };
+  return {
+    label: '消す',
+    action: { kind: 'command', body: { type: 'delete', objId: id }, confirm: DELETE_CONFIRM },
+    danger: true,
+  };
 }
 
 /** 手札から卓に出す位置: 席の手前、卓の内側。 */
@@ -120,7 +126,7 @@ export function showContextMenu(items: MenuItem[], screen: { x: number; y: numbe
   if (items.length === 0) return;
   const menu = h('div', { class: 'context-menu', role: 'menu' });
   for (const it of items) {
-    const b = h('button', { type: 'button', role: 'menuitem', class: it.label === '消す' ? 'danger' : '' }, it.label);
+    const b = h('button', { type: 'button', role: 'menuitem', class: it.danger ? 'danger' : '' }, it.label);
     b.addEventListener('click', () => {
       closeContextMenu();
       onPick(it);

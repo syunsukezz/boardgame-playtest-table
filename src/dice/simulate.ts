@@ -2,16 +2,17 @@
 // 参加者は playback.ts で記録を再生するだけ。
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Rng } from '../core/rng';
-import { DIE_FACE_VALUES, DIE_SIZE } from '../render/card-mesh';
-import { TABLE_HALF_D, TABLE_HALF_W } from '../render/seats-layout';
+import { TABLE_HALF_D, TABLE_HALF_W } from '../core/state';
+import { DIE_SIZE, topFace, topFaceInfo, type Quat } from './faces';
+import { KEYFRAME_STRIDE } from './playback';
+
+export { topFace };
 
 export interface DiceRoll {
   value: number;
   /** [t, px, py, pz, qx, qy, qz, qw, ...]。t は秒。位置は箱の中心（静止時 y≈DIE_SIZE/2）。 */
   keyframes: number[];
 }
-
-type Quat = { x: number; y: number; z: number; w: number };
 
 const STEP = 1 / 60;
 const SAMPLE_EVERY = 2; // 60Hz の2ステップごと = 30Hz
@@ -27,38 +28,6 @@ let initPromise: Promise<void> | null = null;
 export function initDicePhysics(): Promise<void> {
   initPromise ??= RAPIER.init();
   return initPromise;
-}
-
-// 面の法線（ローカル）と目。card-mesh.ts の DIE_FACE_VALUES（px,nx,py,ny,pz,nz）と同じ並び。
-const FACE_NORMALS: readonly [number, number, number][] = [
-  [1, 0, 0],
-  [-1, 0, 0],
-  [0, 1, 0],
-  [0, -1, 0],
-  [0, 0, 1],
-  [0, 0, -1],
-];
-
-/** 回転 q で上（+y）を最もよく向く面の目と、その向きの度合い（1で真上）。 */
-function topFaceInfo(q: Quat): { value: number; dot: number } {
-  let best = 0;
-  let bestDot = -Infinity;
-  for (let i = 0; i < 6; i++) {
-    const [x, y, z] = FACE_NORMALS[i]!;
-    // 回転後ベクトルの y 成分だけを計算する
-    const tx = 2 * (q.y * z - q.z * y);
-    const tz = 2 * (q.x * y - q.y * x);
-    const ry = y + q.w * (q.z * x - q.x * z) + (q.z * tx - q.x * tz);
-    if (ry > bestDot) {
-      bestDot = ry;
-      best = i;
-    }
-  }
-  return { value: DIE_FACE_VALUES[best]!, dot: bestDot };
-}
-
-export function topFace(q: Quat): number {
-  return topFaceInfo(q).value;
 }
 
 const round = (v: number) => Math.round(v * 1e4) / 1e4;
@@ -140,8 +109,8 @@ export function simulateRoll(rng: Rng, start: { x: number; z: number }): DiceRol
     }
 
     // 最後の姿勢を必ず記録し、その（丸めた）回転から出目を決める
-    if (keyframes[keyframes.length - 8] !== round(step * STEP)) push();
-    const n = keyframes.length - 8;
+    if (keyframes[keyframes.length - KEYFRAME_STRIDE] !== round(step * STEP)) push();
+    const n = keyframes.length - KEYFRAME_STRIDE;
     const value = topFace({ x: keyframes[n + 4]!, y: keyframes[n + 5]!, z: keyframes[n + 6]!, w: keyframes[n + 7]! });
     return { value, keyframes };
   } finally {

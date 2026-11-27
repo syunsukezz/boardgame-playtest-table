@@ -1,21 +1,21 @@
 // ホスト側のセッション。卓の完全な状態を持ち、参加者ごとに切り出して送る（KTD2, KTD3, KTD4）。
 import { apply } from '../core/apply';
-import type { Command, CommandBody, LogEvent } from '../core/commands';
+import type { Command, CommandBody, LogEvent, RollOutcome } from '../core/commands';
 import { diffViews, isEmptyPatch } from '../core/diff';
 import { formatLog, type SeatName } from '../core/log';
 import { project, type View, type Viewer } from '../core/project';
 import { cryptoRng, randomId, randomInt, type Rng } from '../core/rng';
-import { emptyState, type ObjectId, type Placement, type SeatId, type TableState, type Vec3 } from '../core/state';
+import { emptyState, seatLabel, type ObjectId, type SeatId, type TableState, type Vec3 } from '../core/state';
 import type { AssetStore } from '../assets/store';
 import { AssetSendTracker, chunkAsset, neededAssetHashes } from '../assets/transfer';
 import { sanitizeChat } from './chat';
+import { DragThrottle } from './drag-throttle';
 import { Heartbeat, realClock, type Clock } from './heartbeat';
 import { Emitter, hasType, type GuestCommand, type GuestToHost, type HostToGuest } from './protocol';
 import { HOST_SEAT, SeatManager, type SeatInfo } from './seats';
 import type { Connection, HostTransport } from './transport';
 
-/** ドラッグ位置の中継の間隔（約20Hz, KTD10）。 */
-export const DRAG_INTERVAL_MS = 50;
+export { DRAG_INTERVAL_MS } from './drag-throttle';
 /** つかんだまま無通信でつかみを解くまで（KTD10）。 */
 export const GRAB_TIMEOUT_MS = 5000;
 /** roomFull などを送ってから接続を閉じるまでの猶予（送信前に閉じないように）。 */
@@ -27,7 +27,7 @@ export interface HostSessionOptions {
   assets: AssetStore;
   rng?: Rng;
   seatName?: SeatName;
-  rollDice?: (dieId: string) => { value: number; keyframes?: number[]; rest?: Placement };
+  rollDice?: (dieId: string) => RollOutcome;
   clock?: Clock;
 }
 
@@ -45,10 +45,11 @@ interface PeerState {
   heartbeat: Heartbeat;
 }
 
-interface DragThrottle {
-  last: number;
-  pending: { pos: Vec3; seat: SeatId; from: string } | null;
-  timer: ReturnType<typeof setTimeout> | null;
+/** 中継待ちのドラッグ位置。from は送り主の接続 ID（ホスト自身は 'host'）。 */
+interface PendingDrag {
+  pos: Vec3;
+  seat: SeatId;
+  from: string;
 }
 
 export type SubmitResult = { ok: true } | { ok: false; error: string };
@@ -61,10 +62,13 @@ export class HostSession {
   private readonly rng: Rng;
   private readonly clock: Clock;
   private readonly seatName: SeatName;
-  private readonly rollDice: (dieId: string) => { value: number; keyframes?: number[]; rest?: Placement };
+  private readonly rollDice: (dieId: string) => RollOutcome;
   private activeSeat: SeatId = HOST_SEAT;
   private readonly grabTouched = new Map<ObjectId, number>();
-  private readonly drags = new Map<ObjectId, DragThrottle>();
+  private readonly drags = new DragThrottle<PendingDrag>(
+    (objId, d) => this.emitDrag(objId, d.pos, d.seat, d.from),
+    () => this.clock.now(),
+  );
   private readonly grabTimer: unknown;
   private readonly unsubAssets: () => void;
   private closed = false;
@@ -82,11 +86,11 @@ export class HostSession {
     this.rng = opts.rng ?? cryptoRng();
     this.clock = opts.clock ?? realClock;
     this.seatName =
-      opts.seatName ?? ((seat) => (seat === HOST_SEAT ? 'ホスト' : (this.seats.nameOf(seat) ?? `席${seat + 1}`)));
+      opts.seatName ?? ((seat) => (seat === HOST_SEAT ? 'ホスト' : (this.seats.nameOf(seat) ?? seatLabel(seat))));
     this.rollDice = opts.rollDice ?? (() => ({ value: 1 + randomInt(this.rng, 6) }));
     opts.transport.onConnection((c) => this.handleConnection(c));
     this.unsubAssets = opts.assets.onAdded(() => {
-      for (const p of this.peers.values()) if (p.joined) this.sendAssets(p);
+      for (const p of this.joinedPeers()) this.sendAssets(p);
     });
     this.grabTimer = this.clock.setInterval(() => this.checkGrabs(), 1000);
   }
@@ -132,9 +136,7 @@ export class HostSession {
   }
   /** 接続中の参加者（割り当て UI 用）。 */
   getParticipants(): Participant[] {
-    return [...this.peers.values()]
-      .filter((p) => p.joined)
-      .map((p) => ({ connId: p.conn.id, name: p.name, seat: this.seats.seatOf(p.conn.id) }));
+    return [...this.joinedPeers()].map((p) => ({ connId: p.conn.id, name: p.name, seat: this.seats.seatOf(p.conn.id) }));
   }
 
   // ---- ホストの操作 ----
@@ -145,7 +147,7 @@ export class HostSession {
       this.cmdErrorEv.emit('not-your-seat');
       return { ok: false, error: 'not-your-seat' };
     }
-    const r = this.applyCommand({ ...body, seat, cmdId: `h-${randomId(this.rng)}` } as Command);
+    const r = this.applyCommand({ ...body, seat, cmdId: this.hostCmdId() } as Command);
     if (!r.ok) {
       this.cmdErrorEv.emit(r.error);
       return r;
@@ -153,12 +155,12 @@ export class HostSession {
     return { ok: true };
   }
 
-  /** ホストの視点を切り替える。自席か兼任中の席だけ。 */
   /** ホスト自身のドラッグ位置を参加者へ中継する（KTD10）。ログにも rev にも入らない。 */
   drag(objId: ObjectId, pos: Vec3): void {
     this.relayDrag(objId, pos, this.activeSeat, 'host');
   }
 
+  /** ホストの視点を切り替える。自席か兼任中の席だけ。 */
   setActiveSeat(seat: SeatId): boolean {
     if (!this.hostControls(seat)) return false;
     this.activeSeat = seat;
@@ -219,8 +221,7 @@ export class HostSession {
     this.activeSeat = HOST_SEAT;
     this.grabTouched.clear();
     this.syncGrabTimes();
-    for (const p of this.peers.values()) {
-      if (!p.joined) continue;
+    for (const p of this.joinedPeers()) {
       this.send(p, { type: 'seated', seat: null, seatKey: null });
       p.lastView = null;
       this.sendView(p);
@@ -246,7 +247,7 @@ export class HostSession {
       p.conn.close();
     }
     this.peers.clear();
-    for (const d of this.drags.values()) if (d.timer) clearTimeout(d.timer);
+    this.drags.dispose();
     this.clock.clearInterval(this.grabTimer);
     this.unsubAssets();
     this.opts.transport.close();
@@ -347,7 +348,7 @@ export class HostSession {
       }
     }
     if (seat === null) {
-      const unseated = [...this.peers.values()].filter((p) => p.joined && this.seats.seatOf(p.conn.id) === null).length;
+      const unseated = [...this.joinedPeers()].filter((p) => this.seats.seatOf(p.conn.id) === null).length;
       if (unseated >= this.seats.freeCount()) {
         this.dismiss(peer, { type: 'roomFull' });
         return;
@@ -414,7 +415,7 @@ export class HostSession {
   }
 
   // ---- 適用と配信 ----
-  private applyCommand(cmd: Command): { ok: true } | { ok: false; error: string } {
+  private applyCommand(cmd: Command): SubmitResult {
     if (cmd.type === 'roll') {
       // 出目はホストが決める（KTD7）。参加者の値は捨てる。
       cmd = { ...cmd, outcome: this.rollDice(cmd.dieId) };
@@ -426,9 +427,7 @@ export class HostSession {
     // 転がる動きを先に送り、出目の反映（View）が後から届くようにする。
     const keyframes = cmd.type === 'roll' ? cmd.outcome?.keyframes : undefined;
     if (cmd.type === 'roll' && keyframes) {
-      for (const p of this.peers.values()) {
-        if (p.joined) this.send(p, { type: 'diceRoll', dieId: cmd.dieId, keyframes });
-      }
+      for (const p of this.joinedPeers()) this.send(p, { type: 'diceRoll', dieId: cmd.dieId, keyframes });
       this.diceEv.emit(cmd.dieId, keyframes);
     }
     this.broadcast(r.log);
@@ -436,8 +435,7 @@ export class HostSession {
   }
 
   private broadcast(log: LogEvent[]): void {
-    for (const p of this.peers.values()) {
-      if (!p.joined) continue;
+    for (const p of this.joinedPeers()) {
       const view = this.sendView(p);
       for (const ev of log) this.send(p, { type: 'log', text: formatLog(ev, view, this.seatName) });
       this.sendAssets(p);
@@ -489,13 +487,18 @@ export class HostSession {
   private broadcastSeats(): void {
     const seats = this.seats.list();
     const pending = this.seats.assignmentPending;
-    for (const p of this.peers.values()) if (p.joined) this.send(p, { type: 'seats', seats, assignmentPending: pending });
+    for (const p of this.joinedPeers()) this.send(p, { type: 'seats', seats, assignmentPending: pending });
     this.seatsEv.emit(seats, pending);
   }
 
   private broadcastChat(from: string, text: string): void {
-    for (const p of this.peers.values()) if (p.joined) this.send(p, { type: 'chat', from, text });
+    for (const p of this.joinedPeers()) this.send(p, { type: 'chat', from, text });
     this.chatEv.emit(from, text);
+  }
+
+  /** 参加済み（hello を受け付けた）のピア。peers をその場でたどる。 */
+  private *joinedPeers(): Generator<PeerState> {
+    for (const p of this.peers.values()) if (p.joined) yield p;
   }
 
   private send(peer: PeerState, msg: HostToGuest): void {
@@ -508,31 +511,11 @@ export class HostSession {
 
   // ---- ドラッグとつかみ（KTD10） ----
   private relayDrag(objId: ObjectId, pos: Vec3, seat: SeatId, from: string): void {
-    let d = this.drags.get(objId);
-    if (!d) this.drags.set(objId, (d = { last: -Infinity, pending: null, timer: null }));
-    const now = this.clock.now();
-    if (!d.timer && now - d.last >= DRAG_INTERVAL_MS) {
-      d.last = now;
-      this.emitDrag(objId, pos, seat, from);
-      return;
-    }
-    d.pending = { pos, seat, from };
-    if (d.timer) return;
-    const dd = d;
-    dd.timer = setTimeout(() => {
-      dd.timer = null;
-      const p = dd.pending;
-      dd.pending = null;
-      if (!p) return;
-      dd.last = this.clock.now();
-      this.emitDrag(objId, p.pos, p.seat, p.from);
-    }, Math.max(0, DRAG_INTERVAL_MS - (now - d.last)));
+    this.drags.push(objId, { pos, seat, from });
   }
 
   private emitDrag(objId: ObjectId, pos: Vec3, seat: SeatId, from: string): void {
-    for (const p of this.peers.values()) {
-      if (p.joined && p.conn.id !== from) this.send(p, { type: 'drag', objId, pos, seat });
-    }
+    for (const p of this.joinedPeers()) if (p.conn.id !== from) this.send(p, { type: 'drag', objId, pos, seat });
     // ホスト自身のドラッグはホストの画面へ返さない。
     if (from !== 'host') this.dragEv.emit(objId, pos, seat);
   }
@@ -559,7 +542,12 @@ export class HostSession {
   }
 
   private releaseAs(objId: ObjectId, seat: SeatId): void {
-    this.applyCommand({ type: 'release', objId, seat, cmdId: `h-${randomId(this.rng)}` });
+    this.applyCommand({ type: 'release', objId, seat, cmdId: this.hostCmdId() });
+  }
+
+  /** ホストが出す操作の ID。 */
+  private hostCmdId(): string {
+    return `h-${randomId(this.rng)}`;
   }
 }
 

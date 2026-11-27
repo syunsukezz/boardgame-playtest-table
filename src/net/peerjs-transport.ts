@@ -1,12 +1,12 @@
 // PeerJS 1.5.5 による通信路（KTD5）。接続は必ず reliable（順序と再送を保証）にする。
 // PeerJS の既定は順序を保証しないので、操作と画像が入れ替わらないよう明示する。
 import { Peer, type DataConnection, type PeerError, type PeerOptions } from 'peerjs';
+import { randomBase32 } from './random';
 import { ConnectionError, type Connection, type ConnectionFailure, type GuestTransport, type HostTransport } from './transport';
 
 const CONNECT_OPTIONS = { reliable: true, serialization: 'binary' } as const;
 /** 相手につながるまでの上限。超えたら回線の制限を疑う（R28）。 */
 const CONNECT_TIMEOUT_MS = 15_000;
-const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567';
 
 export interface PeerTransportOptions {
   /** STUN/TURN の設定。差し替えられるようにしておく（KTD5）。 */
@@ -15,11 +15,7 @@ export interface PeerTransportOptions {
 
 /** 部屋 ID: `tt-` + ランダムな base32 8文字。 */
 export function createRoomId(): string {
-  const buf = new Uint8Array(8);
-  crypto.getRandomValues(buf);
-  let s = 'tt-';
-  for (const b of buf) s += BASE32[b & 31];
-  return s;
+  return `tt-${randomBase32(8)}`;
 }
 
 /** PeerJS のエラー種別を、画面に出す原因の候補に変換する（R28）。 */

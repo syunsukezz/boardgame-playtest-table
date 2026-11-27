@@ -87,10 +87,3 @@ export function project(state: TableState, viewer: Viewer): View {
     heldBy: { ...state.heldBy },
   };
 }
-
-/** この視点で必要なカードの表の画像（KTD4 の配布に使う）。 */
-export function visibleFaceHashes(view: View): Set<string> {
-  const set = new Set<string>();
-  for (const c of Object.values(view.cards)) if (c.face) set.add(c.face.faceHash);
-  return set;
-}

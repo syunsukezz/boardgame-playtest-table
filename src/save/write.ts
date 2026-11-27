@@ -11,18 +11,20 @@ export interface Manifest {
   createdAt: string;
 }
 
-const EXT: Record<string, string> = {
+/** 画像の MIME と保存ファイル内の拡張子の対応。read.ts の読み取りもこの表から作る。 */
+export const ASSET_EXTENSIONS: Readonly<Record<string, string>> = {
   'image/webp': 'webp',
   'image/png': 'png',
   'image/jpeg': 'jpg',
 };
 
 export function assetPath(a: { hash: string; mime: string }): string {
-  return `assets/${a.hash}.${EXT[a.mime] ?? 'bin'}`;
+  return `assets/${a.hash}.${ASSET_EXTENSIONS[a.mime] ?? 'bin'}`;
 }
 
 export function writeSave(state: TableState, assets: StoredAsset[]): Uint8Array {
-  const saved: TableState = { ...structuredClone(state), heldBy: {}, recentCmdIds: [] };
+  // すぐ JSON にするので複製は要らない（つかみと最近の cmdId だけ空にする）。
+  const saved: TableState = { ...state, heldBy: {}, recentCmdIds: [] };
   const manifest: Manifest = { formatVersion: FORMAT_VERSION, createdAt: new Date().toISOString() };
   const files: Zippable = {
     'manifest.json': strToU8(JSON.stringify(manifest)),

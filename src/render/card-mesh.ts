@@ -1,6 +1,7 @@
 // 卓の物のメッシュを作る。カードは1枚1メッシュで、表裏の材質を切り替える（KTD1）。
 import * as THREE from 'three';
 import type { PieceShape } from '../core/state';
+import { DIE_FACE_VALUES, DIE_SIZE } from '../dice/faces';
 import { CARD_H, CARD_T, CARD_W } from './hand-rack';
 
 // 共有するジオメトリ（作り直さない。dispose はレンダラーの終了時だけ）
@@ -8,7 +9,7 @@ const cardGeo = new THREE.BoxGeometry(CARD_W, CARD_T, CARD_H);
 /** 高さ1の箱。山札は y 方向に拡大して厚みを出す */
 const stackGeo = new THREE.BoxGeometry(CARD_W, 1, CARD_H);
 const boardGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-export const DIE_SIZE = 0.4;
+export { DIE_FACE_VALUES, DIE_SIZE };
 const dieGeo = new THREE.BoxGeometry(DIE_SIZE, DIE_SIZE, DIE_SIZE);
 const pieceGeos: Record<PieceShape, THREE.BufferGeometry[]> = {
   pawn: [
@@ -90,9 +91,6 @@ export function createPieceMesh(
   }
   return { group, mat };
 }
-
-/** サイコロの面ごとの目（px,nx,py,ny,pz,nz。向かい合う面の和が7） */
-export const DIE_FACE_VALUES = [3, 4, 1, 6, 2, 5] as const;
 
 export function createDieMesh(pipMats: THREE.Material[]): THREE.Mesh {
   const mesh = new THREE.Mesh(dieGeo, pipMats);

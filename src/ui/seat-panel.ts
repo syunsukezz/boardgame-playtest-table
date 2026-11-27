@@ -1,7 +1,7 @@
 // 席のパネル（R14, R20, R21, R26）。表示内容と操作の候補は seatPanelModel（純粋な関数）で決める。
 import type { SeatId } from '../core/state';
 import type { Participant } from '../net/host';
-import type { SeatInfo, SeatStatus } from '../net/seats';
+import { isSittable, type SeatInfo, type SeatStatus } from '../net/seats';
 import { button, h, seatLabel } from './dom';
 
 export type SeatAction =
@@ -73,10 +73,10 @@ export function seatPanelModel(input: SeatPanelInput): SeatPanelModel {
           actions.push({ kind: 'free' });
           break;
       }
-      if (input.assignmentPending && (s.status === 'empty' || s.status === 'hosted')) {
+      if (input.assignmentPending && isSittable(s.status)) {
         for (const p of unseated) actions.push({ kind: 'assign', connId: p.connId, name: p.name });
       }
-    } else if (input.mySeat === null && !input.assignmentPending && (s.status === 'empty' || s.status === 'hosted')) {
+    } else if (input.mySeat === null && !input.assignmentPending && isSittable(s.status)) {
       actions.push({ kind: 'sit' });
     }
     const row: SeatRow = { seat: s.seat, title: seatLabel(s.seat), statusText: STATUS_TEXT[s.status], active, actions };

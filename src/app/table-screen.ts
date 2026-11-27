@@ -5,7 +5,7 @@ import type { CommandBody } from '../core/commands';
 import type { View } from '../core/project';
 import type { Placement, SeatId, Vec3 } from '../core/state';
 import { createTableRenderer, type TableRenderer } from '../render/scene';
-import { seatAnchor, seatLocalToWorld } from '../render/seats-layout';
+import { SEAT_COLORS, seatAnchor, seatLocalToWorld } from '../render/seats-layout';
 import type { SeatInfo } from '../net/seats';
 import { createChatPanel, type ChatPanel } from '../ui/chat-panel';
 import { closeContextMenu, contextMenuItems, runMenuAction, showContextMenu } from '../ui/context-menu';
@@ -18,9 +18,6 @@ import { renderSeatPanel, seatPanelModel, type SeatAction, type SeatPanelInput }
 import { showToast } from '../ui/toast';
 import { openVisibilityDialog } from '../ui/visibility-dialog';
 import { ImageCache } from './images';
-
-/** 8席の色（つかんでいる名札と席のパネルで使う）。 */
-export const SEAT_COLORS = ['#e53935', '#1e88e5', '#43a047', '#fdd835', '#8e24aa', '#fb8c00', '#00acc1', '#6d4c41'] as const;
 
 export interface TableAdapter {
   role: 'host' | 'guest';
@@ -65,7 +62,7 @@ export function createTableScreen(root: HTMLElement, ad: TableAdapter): TableScr
 
   let view: View | null = null;
   let renderer!: TableRenderer;
-  const images = new ImageCache(ad.assets, () => renderer.refreshImages());
+  const images = new ImageCache(ad.assets, (hash) => renderer.refreshImages(hash));
 
   renderer = createTableRenderer(stage, {
     onCommand: (body) => ad.submit(body),
@@ -91,7 +88,6 @@ export function createTableScreen(root: HTMLElement, ad: TableAdapter): TableScr
     },
     getImage: images.get,
   });
-  renderer.setSeatColors(Object.fromEntries(SEAT_COLORS.map((c, i) => [i, c])));
 
   /** 新しく出す物の置き場所: 操作中の席の手前（少しずらす）。 */
   const spawnPlacement = (): Placement => {
@@ -145,6 +141,9 @@ export function createTableScreen(root: HTMLElement, ad: TableAdapter): TableScr
     toolbar.append(h('div', { class: 'invite' }, input, copy));
   }
 
+  /** 前回描いた席のパネルの中身（同じなら DOM を作り直さない） */
+  let lastSeatPanel = '';
+
   function refreshSeats(): void {
     const seat = ad.activeSeat();
     if (seat !== null) renderer.setActiveSeat(seat);
@@ -153,7 +152,11 @@ export function createTableScreen(root: HTMLElement, ad: TableAdapter): TableScr
     banner.textContent =
       seat === null ? '見学中（席に座っていません）' : `${seatLabel(seat)}として操作中${isHosted ? '（兼任）' : ''}`;
     banner.style.borderColor = seat === null ? '#888' : (SEAT_COLORS[seat] ?? '#888');
-    renderSeatPanel(seatPanelEl, seatPanelModel(input), SEAT_COLORS, {
+    const model = seatPanelModel(input);
+    const key = JSON.stringify(model);
+    if (key === lastSeatPanel) return;
+    lastSeatPanel = key;
+    renderSeatPanel(seatPanelEl, model, SEAT_COLORS, {
       onAction: (s, a) => ad.seatAction(s, a),
       onFinish: () => ad.finishAssignment(),
     });

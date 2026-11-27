@@ -2,8 +2,9 @@
 import * as THREE from 'three';
 import type { CommandBody } from '../core/commands';
 import type { View } from '../core/project';
-import { MAX_SEATS, type Vec3 } from '../core/state';
-import { samplePose } from '../dice/playback';
+import { MAX_SEATS, seatLabel, type Vec3 } from '../core/state';
+import { DIE_FACE_NORMALS } from '../dice/faces';
+import { KEYFRAME_STRIDE, samplePose } from '../dice/playback';
 import { CameraRig } from './camera';
 import {
   DIE_FACE_VALUES,
@@ -21,7 +22,7 @@ import {
 } from './card-mesh';
 import { resolveClick, resolveDrop, type PickTarget } from './drag';
 import { CARD_T, RACK_WIDTH, handLayout, isOverRack } from './hand-rack';
-import { TABLE_HALF_D, TABLE_HALF_W, seatAnchor } from './seats-layout';
+import { SEAT_COLORS, TABLE_HALF_D, TABLE_HALF_W, seatAnchor } from './seats-layout';
 import { TextureStore, type ImageSource } from './textures';
 
 export type { PickTarget } from './drag';
@@ -29,7 +30,7 @@ export type { PickTarget } from './drag';
 export interface TableRendererOptions {
   /** 名前のある操作を送る */
   onCommand(body: CommandBody): void;
-  /** ドラッグ中の位置（約20Hzに間引いて呼ぶ） */
+  /** ドラッグ中の位置（pointermove ごとに呼ぶ。間引きはセッション側の DragThrottle が行う） */
   onDragMove(objId: string, pos: Vec3): void;
   /** 右クリック。U8 がメニューを出す */
   onContextMenu(target: PickTarget, screen: { x: number; y: number }): void;
@@ -40,9 +41,9 @@ export interface TableRendererOptions {
 export interface TableRenderer {
   setView(view: View): void;
   setActiveSeat(seat: number): void;
-  setSeatColors(colors: Record<number, string>): void;
   setRemoteDrag(objId: string, pos: Vec3): void;
-  refreshImages(): void;
+  /** 画像が使えるようになったら貼り直す。hash を渡すとその画像を使う物だけ、省くとすべて */
+  refreshImages(hash?: string): void;
   /**
    * サイコロの動きの記録（U7: 卓の世界座標、位置は箱の中心）を実時間で再生する。
    * 再生中は View の値で上書きしない。止まった姿勢のまま、View の配置が追いつくのを待ってから通常の表示に戻す。
@@ -62,7 +63,7 @@ const ROLL_SETTLE_MS = 1500;
  * 最後の回転 q ≈ R_y(rot)·C(value) となる rot を求める。
  */
 export function dieRestPose(keyframes: number[]): { pos: Vec3; rot: number; value: number } {
-  const n = keyframes.length - 8;
+  const n = keyframes.length - KEYFRAME_STRIDE;
   const q = new THREE.Quaternion(keyframes[n + 4], keyframes[n + 5], keyframes[n + 6], keyframes[n + 7]).normalize();
   const value = topFaceOf(q);
   const c = new THREE.Quaternion().setFromEuler(dieRotationFor(value));
@@ -71,17 +72,14 @@ export function dieRestPose(keyframes: number[]): { pos: Vec3; rot: number; valu
   return { pos: { x: keyframes[n + 1]!, y: 0, z: keyframes[n + 3]! }, rot: Math.atan2(-v.z, v.x), value };
 }
 
-// card-mesh.ts の DIE_FACE_VALUES と同じ並び（+x, -x, +y, -y, +z, -z）
-const FACE_NORMALS = [
-  new THREE.Vector3(1, 0, 0),
-  new THREE.Vector3(-1, 0, 0),
-  new THREE.Vector3(0, 1, 0),
-  new THREE.Vector3(0, -1, 0),
-  new THREE.Vector3(0, 0, 1),
-  new THREE.Vector3(0, 0, -1),
-];
+// DIE_FACE_VALUES と同じ並び（+x, -x, +y, -y, +z, -z）
+const FACE_NORMALS = DIE_FACE_NORMALS.map(([x, y, z]) => new THREE.Vector3(x, y, z));
 
-/** 回転 q で上を向く面の目 */
+/**
+ * 回転 q で上を向く面の目。
+ * dice/faces.ts の topFace とは回転の計算式が異なり、斜めの姿勢では結果が食い違うことがあるため、
+ * 振る舞いを変えないようにここでは three.js の回転のまま残している。
+ */
 function topFaceOf(q: THREE.Quaternion): number {
   let best = 0;
   let bestY = -Infinity;
@@ -95,9 +93,7 @@ function topFaceOf(q: THREE.Quaternion): number {
   return DIE_FACE_VALUES[best]!;
 }
 
-const DEFAULT_SEAT_COLORS = ['#e53935', '#1e88e5', '#43a047', '#fdd835', '#8e24aa', '#fb8c00', '#00acc1', '#6d4c41'];
 const DRAG_LIFT = 0.25;
-const DRAG_SEND_MS = 50;
 const CLICK_SLOP_PX = 4;
 
 /** 描いている物1つ分 */
@@ -176,8 +172,6 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
   const entries = new Map<string, Entry>();
   let view: View | undefined;
   let activeSeat = 0;
-  const seatColors: Record<number, string> = {};
-  DEFAULT_SEAT_COLORS.forEach((c, i) => (seatColors[i] = c));
   rig.goToSeat(activeSeat, false);
 
   // ---- 物の作成・更新 ----
@@ -198,21 +192,20 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     if (e.label) e.label.material.dispose();
   }
 
+  /** 材質の画像を差し替える。変わったときだけ材質を更新させる */
+  function setMap(m: THREE.MeshStandardMaterial, map: THREE.Texture | null): void {
+    if (m.map === map) return;
+    m.map = map;
+    m.needsUpdate = true;
+  }
+
   function applyTextures(e: Entry): void {
     if (e.card) {
-      e.card.top.map = e.tex.top ? textures.get(e.tex.top) : null;
-      e.card.bottom.map = e.tex.bottom ? textures.getTurned(e.tex.bottom) : null;
-      e.card.top.needsUpdate = true;
-      e.card.bottom.needsUpdate = true;
+      setMap(e.card.top, e.tex.top ? textures.get(e.tex.top) : null);
+      setMap(e.card.bottom, e.tex.bottom ? textures.getTurned(e.tex.bottom) : null);
     }
-    if (e.stack) {
-      e.stack.top.map = e.tex.top ? textures.get(e.tex.top) : null;
-      e.stack.top.needsUpdate = true;
-    }
-    if (e.board) {
-      e.board.map = e.tex.top ? textures.get(e.tex.top) : null;
-      e.board.needsUpdate = true;
-    }
+    if (e.stack) setMap(e.stack.top, e.tex.top ? textures.get(e.tex.top) : null);
+    if (e.board) setMap(e.board, e.tex.top ? textures.get(e.tex.top) : null);
   }
 
   function setTex(e: Entry, top: string | undefined, bottom: string | undefined): void {
@@ -364,7 +357,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
   function updateHeld(): void {
     for (const [id, e] of entries) {
       const seat = view?.heldBy[id];
-      const color = seat === undefined ? undefined : (seatColors[seat] ?? '#ffffff');
+      const color = seat === undefined ? undefined : (SEAT_COLORS[seat] ?? '#ffffff');
       for (const m of e.mats) {
         if (color) {
           m.emissive.set(color);
@@ -372,7 +365,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
         } else m.emissive.set(0x000000);
       }
       if (seat !== undefined && color) {
-        const tex = textures.label(`席${seat + 1}`, color);
+        const tex = textures.label(seatLabel(seat), color);
         if (!e.label) {
           e.label = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
           e.label.scale.set(0.6, 0.225, 1);
@@ -431,7 +424,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     | { entry: Entry | undefined; x: number; y: number; button: number; pointerId: number }
     | undefined;
   let dragging:
-    | { entry: Entry; offset: THREE.Vector3; baseY: number; lastSent: number; isHand: boolean }
+    | { entry: Entry; offset: THREE.Vector3; baseY: number; isHand: boolean }
     | undefined;
 
   function onPointerDown(ev: PointerEvent): void {
@@ -445,7 +438,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     const offset = isHand ? new THREE.Vector3() : e.root.position.clone().sub(hit).setY(0);
     const baseY = isHand ? 0 : e.target.y;
     e.roll = undefined;
-    dragging = { entry: e, offset, baseY, lastSent: 0, isHand };
+    dragging = { entry: e, offset, baseY, isHand };
     renderer.domElement.setPointerCapture(ev.pointerId);
     if (!isHand) opts.onCommand({ type: 'grab', objId: e.pick.id });
     if (isHand) {
@@ -466,11 +459,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     const pos = hit.add(d.offset);
     d.entry.root.position.set(pos.x, d.baseY + DRAG_LIFT, pos.z);
     d.entry.target.copy(d.entry.root.position);
-    const now = performance.now();
-    if (!d.isHand && now - d.lastSent >= DRAG_SEND_MS) {
-      d.lastSent = now;
-      opts.onDragMove(d.entry.pick.id, { x: pos.x, y: d.baseY, z: pos.z });
-    }
+    if (!d.isHand) opts.onDragMove(d.entry.pick.id, { x: pos.x, y: d.baseY, z: pos.z });
   }
 
   function onPointerUp(ev: PointerEvent): void {
@@ -585,21 +574,19 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
       activeSeat = seat;
       rig.goToSeat(seat, true);
     },
-    setSeatColors(colors) {
-      for (const [k, c] of Object.entries(colors)) seatColors[Number(k)] = c;
-      updateHeld();
-    },
     setRemoteDrag(objId, pos) {
       const e = entries.get(objId);
       if (!e || dragging?.entry === e) return;
       e.target.set(pos.x, pos.y + DRAG_LIFT, pos.z);
     },
-    refreshImages() {
-      for (const e of entries.values()) applyTextures(e);
+    refreshImages(hash) {
+      for (const e of entries.values()) {
+        if (hash === undefined || e.tex.top === hash || e.tex.bottom === hash) applyTextures(e);
+      }
     },
     playDiceRoll(dieId, keyframes) {
       const e = entries.get(dieId);
-      if (!e || !e.die || keyframes.length < 8) return;
+      if (!e || !e.die || keyframes.length < KEYFRAME_STRIDE) return;
       if (dragging?.entry === e) return;
       e.roll = { kf: keyframes, start: performance.now(), rest: dieRestPose(keyframes) };
     },

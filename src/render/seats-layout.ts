@@ -1,9 +1,11 @@
 // 8席を長方形の卓のまわりに置く。three.js を参照しない純粋な計算。
-import { MAX_SEATS, type Vec3 } from '../core/state';
+import { MAX_SEATS, TABLE_HALF_D, TABLE_HALF_W, type Vec3 } from '../core/state';
 
 /** 卓面の半分の幅（x）と奥行き（z）。卓面は y=0。 */
-export const TABLE_HALF_W = 6;
-export const TABLE_HALF_D = 4;
+export { TABLE_HALF_D, TABLE_HALF_W };
+
+/** 8席の色（つかんでいる名札・席のパネル・帯で使う）。 */
+export const SEAT_COLORS = ['#e53935', '#1e88e5', '#43a047', '#fdd835', '#8e24aa', '#fb8c00', '#00acc1', '#6d4c41'] as const;
 /** 手札ラックを卓の縁からどれだけ外に置くか */
 const RACK_OUTSET = 0.45;
 

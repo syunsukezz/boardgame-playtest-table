@@ -4,7 +4,7 @@ import { apply } from '../core/apply';
 import type { CommandBody, NewCardSpec } from '../core/commands';
 import { project } from '../core/project';
 import { seededRng } from '../core/rng';
-import { emptyState, type TableState } from '../core/state';
+import { emptyState, seatLabel, type TableState } from '../core/state';
 import { createTableRenderer } from './scene';
 
 const images = new Map<string, HTMLCanvasElement>();
@@ -92,7 +92,7 @@ const renderer = createTableRenderer(host, {
 
 function refresh(): void {
   renderer.setView(project(state, { kind: 'seat', seat }));
-  badge.textContent = `席${seat + 1}として操作中（数字キー 1〜8 で切り替え）`;
+  badge.textContent = `${seatLabel(seat)}として操作中（数字キー 1〜8 で切り替え）`;
 }
 refresh();
 

@@ -1,6 +1,6 @@
 // 配るダイアログ（R8）。枚数・配り先の席・見える人（4択）を選び、1つの「配る」操作を作る。
 import type { CommandBody, DealVisibility } from '../core/commands';
-import { MAX_SEATS, type SeatId } from '../core/state';
+import { MAX_SEATS, normalizeSeats, type SeatId } from '../core/state';
 import { openDialog } from './dialog';
 import { h, seatLabel } from './dom';
 
@@ -24,7 +24,7 @@ export function parseCount(count: string | number): number | null {
 export function buildDealCommand(f: DealForm): DealCommand | null {
   const count = parseCount(f.count);
   if (count === null) return null;
-  const seats = [...new Set(f.seats)].filter((s) => Number.isInteger(s) && s >= 0 && s < MAX_SEATS).sort((a, b) => a - b);
+  const seats = normalizeSeats(f.seats);
   if (seats.length === 0) return null;
   return { type: 'deal', stackId: f.stackId, count, seats, visibility: f.visibility };
 }

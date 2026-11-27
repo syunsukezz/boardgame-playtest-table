@@ -6,6 +6,25 @@ export type ObjectId = string;
 
 export const MAX_SEATS = 8;
 
+/** 卓面の半分の幅（x）と奥行き（z）。卓面は y=0。描画とサイコロの物理演算で共有する。 */
+export const TABLE_HALF_W = 6;
+export const TABLE_HALF_D = 4;
+
+/** 0〜MAX_SEATS-1 の整数か。 */
+export function isSeatId(n: number): n is SeatId {
+  return Number.isInteger(n) && n >= 0 && n < MAX_SEATS;
+}
+
+/** 席の並びを整える: 重複と範囲外を除き、小さい順に並べる。 */
+export function normalizeSeats(seats: readonly number[]): SeatId[] {
+  return [...new Set(seats)].filter(isSeatId).sort((a, b) => a - b);
+}
+
+/** 席番号（0始まり）を画面の名前にする。 */
+export function seatLabel(seat: number): string {
+  return `席${seat + 1}`;
+}
+
 export interface Vec3 {
   x: number;
   y: number;

@@ -1,5 +1,6 @@
 // 席の管理（HTD「席の状態」、R12, R14, R20, R21, KTD6）。通信に依存しない純粋なロジック。
 import { MAX_SEATS, type SeatId } from '../core/state';
+import { randomBase32 } from './random';
 
 export type SeatStatus = 'empty' | 'occupied' | 'hosted' | 'disconnected' | 'host';
 
@@ -25,12 +26,12 @@ export const HOST_SEAT: SeatId = 0;
 
 /** 推測できない席の鍵（base32 26文字 ≒ 130bit）。 */
 export function randomSeatKey(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyz234567';
-  const buf = new Uint8Array(26);
-  crypto.getRandomValues(buf);
-  let s = '';
-  for (const b of buf) s += chars[b & 31];
-  return s;
+  return randomBase32(26);
+}
+
+/** 参加者が座れる席（空席か兼任中の席）か。 */
+export function isSittable(status: SeatStatus | undefined): boolean {
+  return status === 'empty' || status === 'hosted';
 }
 
 export class SeatManager {
@@ -60,7 +61,7 @@ export class SeatManager {
 
   /** 座れる席（空席と兼任中の席）の数。 */
   freeCount(): number {
-    return this.seats.filter((r) => r.status === 'empty' || r.status === 'hosted').length;
+    return this.seats.filter((r) => isSittable(r.status)).length;
   }
 
   sit(connId: string, seat: SeatId, name: string): SitResult {
@@ -68,11 +69,9 @@ export class SeatManager {
     const r = this.seats[seat];
     if (!r || !Number.isInteger(seat)) return { ok: false, reason: 'invalid-seat' };
     if (this.seatOf(connId) !== null) return { ok: false, reason: 'already-seated' };
-    if (r.status !== 'empty' && r.status !== 'hosted') return { ok: false, reason: 'seat-taken' };
+    if (!isSittable(r.status)) return { ok: false, reason: 'seat-taken' };
     const wasHosted = r.status === 'hosted';
-    const seatKey = this.newKey();
-    this.seats[seat] = { status: 'occupied', name, seatKey, connId };
-    return { ok: true, seatKey, wasHosted };
+    return { ok: true, seatKey: this.occupy(seat, connId, name), wasHosted };
   }
 
   /**
@@ -127,15 +126,20 @@ export class SeatManager {
   /** ホストによる割り当て（読み込み後など）。新しい鍵を返す。 */
   assign(connId: string, seat: SeatId, name: string): string | null {
     const r = this.seats[seat];
-    if (!r || (r.status !== 'empty' && r.status !== 'hosted')) return null;
+    if (!r || !isSittable(r.status)) return null;
     if (this.seatOf(connId) !== null) return null;
-    const seatKey = this.newKey();
-    this.seats[seat] = { status: 'occupied', name, seatKey, connId };
-    return seatKey;
+    return this.occupy(seat, connId, name);
   }
 
   finishAssignment(): void {
     this.assignmentPending = false;
+  }
+
+  /** 席を着席中にし、新しい鍵を発行して返す（呼ぶたびに新しい鍵）。 */
+  private occupy(seat: SeatId, connId: string, name: string): string {
+    const seatKey = this.newKey();
+    this.seats[seat] = { status: 'occupied', name, seatKey, connId };
+    return seatKey;
   }
 
   /** 保存ファイルの読み込み: ホスト以外の全席を空席にし、割り当て待ちにする（R21）。 */

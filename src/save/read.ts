@@ -5,11 +5,14 @@ import { sha256Hex } from '../assets/hash';
 import type { StoredAsset } from '../assets/store';
 import type { TableState } from '../core/state';
 import { MAX_ASSET_BYTES, MAX_SAVE_BYTES, SaveError, validateState } from './validate';
-import { FORMAT_VERSION, referencedHashes } from './write';
+import { ASSET_EXTENSIONS, FORMAT_VERSION, referencedHashes } from './write';
 
 export { SaveError };
 
-const MIME: Record<string, string> = { webp: 'image/webp', png: 'image/png', jpg: 'image/jpeg' };
+/** 拡張子 → MIME（write.ts の表の逆） */
+const MIME: Record<string, string> = Object.fromEntries(Object.entries(ASSET_EXTENSIONS).map(([mime, ext]) => [ext, mime]));
+/** 保存ファイル内の画像のパス（assets/<sha256>.<拡張子>） */
+const ASSET_PATH = new RegExp(`^assets\\/([0-9a-f]{64})\\.(${Object.values(ASSET_EXTENSIONS).join('|')})$`);
 
 export interface LoadedSave {
   state: TableState;
@@ -34,15 +37,22 @@ export async function readSave(bytes: Uint8Array): Promise<LoadedSave> {
   state.heldBy = {};
   state.recentCmdIds = [];
 
+  // 画像を順に選び出す。大きすぎる画像があれば、それより前の画像だけを確かめてから止める（順に確かめたときと同じ結果）。
   const assets: StoredAsset[] = [];
+  let tooLarge = false;
   for (const [path, data] of Object.entries(files)) {
-    const m = /^assets\/([0-9a-f]{64})\.(webp|png|jpg)$/.exec(path);
+    const m = ASSET_PATH.exec(path);
     if (!m) continue;
-    if (data.length > MAX_ASSET_BYTES) throw new SaveError('大きすぎる画像が含まれています');
-    const hash = m[1]!;
-    if ((await sha256Hex(data)) !== hash) throw new SaveError('画像が壊れています（ハッシュが一致しません）');
-    assets.push({ hash, mime: MIME[m[2]!]!, bytes: data });
+    if (data.length > MAX_ASSET_BYTES) {
+      tooLarge = true;
+      break;
+    }
+    assets.push({ hash: m[1]!, mime: MIME[m[2]!]!, bytes: data });
   }
+  // ハッシュはまとめて並列に計算し、最初に一致しなかった画像で止める。
+  const digests = await Promise.all(assets.map((a) => sha256Hex(a.bytes)));
+  if (digests.some((d, i) => d !== assets[i]!.hash)) throw new SaveError('画像が壊れています（ハッシュが一致しません）');
+  if (tooLarge) throw new SaveError('大きすぎる画像が含まれています');
 
   const have = new Set(assets.map((a) => a.hash));
   for (const h of referencedHashes(state)) {

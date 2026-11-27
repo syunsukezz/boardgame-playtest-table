@@ -8,7 +8,7 @@ import type { AssetStore } from '../assets/store';
 import { AssetReceiver } from '../assets/transfer';
 import { sanitizeChat } from './chat';
 import { Heartbeat, type Clock } from './heartbeat';
-import { DRAG_INTERVAL_MS } from './host';
+import { DragThrottle } from './drag-throttle';
 import { Emitter, hasType, isAssetMessage, type GuestToHost, type HostToGuest } from './protocol';
 import type { SeatInfo } from './seats';
 import { ConnectionError, type Connection, type ConnectionFailure, type GuestTransport } from './transport';
@@ -41,12 +41,6 @@ export interface GuestSessionOptions {
 
 const DEFAULT_RECONNECT_DELAYS = [500, 1000, 2000, 4000, 8000, 8000];
 
-interface DragThrottle {
-  last: number;
-  pending: Vec3 | null;
-  timer: ReturnType<typeof setTimeout> | null;
-}
-
 export class GuestSession {
   private conn: Connection | null = null;
   private heartbeat: Heartbeat | null = null;
@@ -63,7 +57,7 @@ export class GuestSession {
   private sentSessionKey = false;
   private readonly receiver = new AssetReceiver();
   private readonly rng = cryptoRng();
-  private readonly drags = new Map<ObjectId, DragThrottle>();
+  private readonly drags = new DragThrottle<Vec3>((objId, pos) => this.send({ type: 'drag', objId, pos }), () => Date.now());
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly viewEv = new Emitter<[View]>();
@@ -143,25 +137,7 @@ export class GuestSession {
 
   /** ドラッグ中の位置。約20Hz に間引き、最後の位置は必ず送る（KTD10）。 */
   drag(objId: ObjectId, pos: Vec3): void {
-    let d = this.drags.get(objId);
-    if (!d) this.drags.set(objId, (d = { last: -Infinity, pending: null, timer: null }));
-    const now = Date.now();
-    if (!d.timer && now - d.last >= DRAG_INTERVAL_MS) {
-      d.last = now;
-      this.send({ type: 'drag', objId, pos });
-      return;
-    }
-    d.pending = pos;
-    if (d.timer) return;
-    const dd = d;
-    dd.timer = setTimeout(() => {
-      dd.timer = null;
-      const p = dd.pending;
-      dd.pending = null;
-      if (!p) return;
-      dd.last = Date.now();
-      this.send({ type: 'drag', objId, pos: p });
-    }, Math.max(0, DRAG_INTERVAL_MS - (now - d.last)));
+    this.drags.push(objId, pos);
   }
 
   chat(text: string): void {
@@ -254,7 +230,7 @@ export class GuestSession {
   private terminate(status: GuestStatus): void {
     this.terminated = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    for (const d of this.drags.values()) if (d.timer) clearTimeout(d.timer);
+    this.drags.dispose();
     const conn = this.conn;
     this.dropConnection();
     conn?.close();

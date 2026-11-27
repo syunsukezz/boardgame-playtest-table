@@ -171,11 +171,11 @@ async function startHost(root: HTMLElement, name: string): Promise<void> {
   });
   window.addEventListener('pagehide', () => host.close());
   // 裏に回ったタブはタイマーが間引かれ、参加者への反映が遅れる（Risks）
-  let hiddenAt: number | null = null;
+  let wasHidden = false;
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) hiddenAt = Date.now();
-    else if (hiddenAt !== null) {
-      hiddenAt = null;
+    if (document.hidden) wasHidden = true;
+    else if (wasHidden) {
+      wasHidden = false;
       showToast('このタブが裏に回っている間、参加者への反映が遅れます。部屋を開いている間は、このタブを表に出しておいてください', 'warn', 8000);
     }
   });

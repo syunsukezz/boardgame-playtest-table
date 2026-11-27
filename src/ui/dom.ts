@@ -31,11 +31,5 @@ export function button(label: string, onClick: () => void, cls = ''): HTMLButton
   return b;
 }
 
-export function clear(el: Element): void {
-  el.replaceChildren();
-}
-
-/** 席番号（0始まり）を画面の名前にする。 */
-export function seatLabel(seat: number): string {
-  return `席${seat + 1}`;
-}
+/** 席番号（0始まり）を画面の名前にする（core/state に移した。ここからも使えるように残す）。 */
+export { seatLabel } from '../core/state';

@@ -4,12 +4,16 @@ import type { ApplyError, Command, DealVisibility, LogEvent } from './commands';
 import { randomId, randomInt, shuffleInPlace, type Rng } from './rng';
 import {
   MAX_SEATS,
+  isSeatId,
+  normalizeSeats,
   type Card,
+  type CardLocation,
   type ObjectId,
   type Placement,
   type SeatId,
   type Stack,
   type TableState,
+  type Vec3,
   type Visibility,
 } from './state';
 
@@ -88,7 +92,7 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
       return;
     }
     case 'draw': {
-      if (!Number.isInteger(cmd.count) || cmd.count < 1) fail('invalid-args');
+      requirePositiveInt(cmd.count);
       ensureNotHeldByOther(state, cmd.stackId, seat);
       const stack = requireStack(state, cmd.stackId);
       let drawn = 0;
@@ -115,7 +119,7 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
       if (card.loc.type !== 'hand') fail('invalid-target');
       removeFromHand(state, card);
       const faceUp = cmd.faceUp ?? true;
-      card.loc = { type: 'table', placement: { pos: { ...cmd.pos }, rot: 0 }, faceUp };
+      card.loc = tableLoc(cmd.pos, faceUp);
       log.push({ type: 'play', seat, cardId: card.id, faceUp });
       return;
     }
@@ -124,7 +128,7 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
       const stack = requireStack(state, cmd.stackId);
       const id = popTop(state, stack);
       if (!id) fail('invalid-target');
-      state.cards[id]!.loc = { type: 'table', placement: { pos: { ...cmd.pos }, rot: 0 }, faceUp: false };
+      state.cards[id]!.loc = tableLoc(cmd.pos, false);
       return;
     }
     case 'shuffle': {
@@ -143,8 +147,8 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
       return;
     }
     case 'deal': {
-      if (!Number.isInteger(cmd.count) || cmd.count < 1) fail('invalid-args');
-      if (cmd.seats.length === 0 || cmd.seats.some((s) => !isSeat(s))) fail('invalid-args');
+      requirePositiveInt(cmd.count);
+      if (cmd.seats.length === 0 || cmd.seats.some((s) => !isSeatId(s))) fail('invalid-args');
       ensureNotHeldByOther(state, cmd.stackId, seat);
       const stack = requireStack(state, cmd.stackId);
       const wanted = cmd.count * cmd.seats.length;
@@ -237,8 +241,14 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
   }
 }
 
-function isSeat(s: number): s is SeatId {
-  return Number.isInteger(s) && s >= 0 && s < MAX_SEATS;
+/** 枚数などの1以上の整数。違えば invalid-args。 */
+function requirePositiveInt(n: number): void {
+  if (!Number.isInteger(n) || n < 1) fail('invalid-args');
+}
+
+/** 卓上の場所（回転なし）。 */
+function tableLoc(pos: Vec3, faceUp: boolean): CardLocation {
+  return { type: 'table', placement: { pos: { ...pos }, rot: 0 }, faceUp };
 }
 
 function dealVisibility(v: DealVisibility, to: SeatId): Visibility {
@@ -259,7 +269,7 @@ function dealVisibility(v: DealVisibility, to: SeatId): Visibility {
 
 function normalizeVisibility(v: Visibility): Visibility {
   if (v.kind !== 'seats') return { kind: v.kind };
-  const seats = [...new Set(v.seats)].filter(isSeat).sort((a, b) => a - b);
+  const seats = normalizeSeats(v.seats);
   if (seats.length === 0) return { kind: 'none' };
   return { kind: 'seats', seats };
 }

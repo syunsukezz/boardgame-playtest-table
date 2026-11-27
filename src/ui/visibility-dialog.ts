@@ -1,6 +1,6 @@
 // 手札のカードの「見える人を変える」ダイアログ（R5）。全員・誰にも・席の複数選択から選ぶ。
 import type { CommandBody } from '../core/commands';
-import { MAX_SEATS, type SeatId } from '../core/state';
+import { MAX_SEATS, normalizeSeats, type SeatId } from '../core/state';
 import { openDialog } from './dialog';
 import { h, seatLabel } from './dom';
 
@@ -10,7 +10,7 @@ export type VisibilityChoice = 'all' | 'none' | 'seats';
 export function buildVisibilityCommand(cardId: string, choice: VisibilityChoice, seats: SeatId[]): CommandBody | null {
   if (choice === 'all') return { type: 'setVisibility', cardId, visibility: { kind: 'all' } };
   if (choice === 'none') return { type: 'setVisibility', cardId, visibility: { kind: 'none' } };
-  const list = [...new Set(seats)].filter((s) => Number.isInteger(s) && s >= 0 && s < MAX_SEATS).sort((a, b) => a - b);
+  const list = normalizeSeats(seats);
   if (list.length === 0) return null;
   return { type: 'setVisibility', cardId, visibility: { kind: 'seats', seats: list } };
 }

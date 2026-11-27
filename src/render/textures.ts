@@ -10,20 +10,27 @@ function makeCanvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingCo
   return [c, c.getContext('2d')!];
 }
 
+/** canvas から sRGB のテクスチャを作る。 */
+function canvasTexture(c: HTMLCanvasElement): THREE.CanvasTexture {
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 function toTexture(img: ImageSource, anisotropy: number): THREE.Texture {
   let tex: THREE.Texture;
   if (typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap) {
     // ImageBitmap は flipY が効かないため、canvas に描き直して使う
     const [c, ctx] = makeCanvas(img.width, img.height);
     ctx.drawImage(img, 0, 0);
-    tex = new THREE.CanvasTexture(c);
+    tex = canvasTexture(c);
   } else if (img instanceof HTMLCanvasElement) {
-    tex = new THREE.CanvasTexture(img);
+    tex = canvasTexture(img);
   } else {
     tex = new THREE.Texture(img);
     tex.needsUpdate = true;
+    tex.colorSpace = THREE.SRGBColorSpace;
   }
-  tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = anisotropy;
   return tex;
 }
@@ -38,9 +45,7 @@ function makePlaceholder(): THREE.Texture {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('…', 64, 90);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  return canvasTexture(c);
 }
 
 // サイコロの目の位置（0〜1）
@@ -103,8 +108,7 @@ export class TextureStore {
       ctx.arc(x * 128, y * 128, n === 1 ? 18 : 12, 0, Math.PI * 2);
       ctx.fill();
     }
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
+    const tex = canvasTexture(c);
     this.pips.set(n, tex);
     return tex;
   }
@@ -124,8 +128,7 @@ export class TextureStore {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, 64, 25);
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
+    const tex = canvasTexture(c);
     this.labels.set(key, tex);
     return tex;
   }
@@ -137,6 +140,7 @@ export class TextureStore {
     for (const t of this.labels.values()) t.dispose();
     this.placeholder.dispose();
     this.byHash.clear();
+    this.turned.clear();
     this.pips.clear();
     this.labels.clear();
   }
