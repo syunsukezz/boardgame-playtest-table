@@ -3,9 +3,11 @@ import * as THREE from 'three';
 import type { CommandBody } from '../core/commands';
 import type { View } from '../core/project';
 import { MAX_SEATS, type Vec3 } from '../core/state';
+import { samplePose } from '../dice/playback';
 import { CameraRig } from './camera';
 import {
   DIE_FACE_VALUES,
+  DIE_SIZE,
   createBoardMesh,
   createCardMesh,
   createDieMesh,
@@ -41,7 +43,56 @@ export interface TableRenderer {
   setSeatColors(colors: Record<number, string>): void;
   setRemoteDrag(objId: string, pos: Vec3): void;
   refreshImages(): void;
+  /**
+   * サイコロの動きの記録（U7: 卓の世界座標、位置は箱の中心）を実時間で再生する。
+   * 再生中は View の値で上書きしない。止まった姿勢のまま、View の配置が追いつくのを待ってから通常の表示に戻す。
+   */
+  playDiceRoll(dieId: string, keyframes: number[]): void;
+  /** この端末で使えるテクスチャの最大の辺（盤面の取り込みの上限に使う） */
+  readonly maxTextureSize: number;
   dispose(): void;
+}
+
+/** 再生が終わってから、View の配置が止まった位置に追いつくのを待つ上限 */
+const ROLL_SETTLE_MS = 1500;
+
+/**
+ * 記録の最後の姿勢を、卓の配置（位置・上向き軸の回転）と出目に直す。
+ * 描画では root.rotation.y = rot、サイコロ本体に dieRotationFor(value) をかけるので、
+ * 最後の回転 q ≈ R_y(rot)·C(value) となる rot を求める。
+ */
+export function dieRestPose(keyframes: number[]): { pos: Vec3; rot: number; value: number } {
+  const n = keyframes.length - 8;
+  const q = new THREE.Quaternion(keyframes[n + 4], keyframes[n + 5], keyframes[n + 6], keyframes[n + 7]).normalize();
+  const value = topFaceOf(q);
+  const c = new THREE.Quaternion().setFromEuler(dieRotationFor(value));
+  const m = q.clone().multiply(c.invert());
+  const v = new THREE.Vector3(1, 0, 0).applyQuaternion(m);
+  return { pos: { x: keyframes[n + 1]!, y: 0, z: keyframes[n + 3]! }, rot: Math.atan2(-v.z, v.x), value };
+}
+
+// card-mesh.ts の DIE_FACE_VALUES と同じ並び（+x, -x, +y, -y, +z, -z）
+const FACE_NORMALS = [
+  new THREE.Vector3(1, 0, 0),
+  new THREE.Vector3(-1, 0, 0),
+  new THREE.Vector3(0, 1, 0),
+  new THREE.Vector3(0, -1, 0),
+  new THREE.Vector3(0, 0, 1),
+  new THREE.Vector3(0, 0, -1),
+];
+
+/** 回転 q で上を向く面の目 */
+function topFaceOf(q: THREE.Quaternion): number {
+  let best = 0;
+  let bestY = -Infinity;
+  FACE_NORMALS.forEach((nv, i) => {
+    const y = nv.clone().applyQuaternion(q).y;
+    if (y > bestY) {
+      bestY = y;
+      best = i;
+    }
+  });
+  return DIE_FACE_VALUES[best]!;
 }
 
 const DEFAULT_SEAT_COLORS = ['#e53935', '#1e88e5', '#43a047', '#fdd835', '#8e24aa', '#fb8c00', '#00acc1', '#6d4c41'];
@@ -70,6 +121,8 @@ interface Entry {
   /** テクスチャを貼り直すための情報 */
   tex: { top?: string; bottom?: string };
   visualH: number;
+  /** サイコロの動きを再生中 */
+  roll?: { kf: number[]; start: number; rest: { pos: Vec3; rot: number; value: number }; endedAt?: number };
 }
 
 export function createTableRenderer(container: HTMLElement, opts: TableRendererOptions): TableRenderer {
@@ -148,7 +201,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
   function applyTextures(e: Entry): void {
     if (e.card) {
       e.card.top.map = e.tex.top ? textures.get(e.tex.top) : null;
-      e.card.bottom.map = e.tex.bottom ? textures.get(e.tex.bottom) : null;
+      e.card.bottom.map = e.tex.bottom ? textures.getTurned(e.tex.bottom) : null;
       e.card.top.needsUpdate = true;
       e.card.bottom.needsUpdate = true;
     }
@@ -287,7 +340,8 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
           break;
         }
         case 'die':
-          ent.die!.rotation.copy(dieRotationFor(o.value));
+          // 再生中は出目の向きで上書きしない（止まったあとに合わせる）
+          if (!ent.roll) ent.die!.rotation.copy(dieRotationFor(o.value));
           break;
         case 'piece':
           break;
@@ -390,6 +444,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     const hit = planePoint(ev) ?? e.root.position.clone();
     const offset = isHand ? new THREE.Vector3() : e.root.position.clone().sub(hit).setY(0);
     const baseY = isHand ? 0 : e.target.y;
+    e.roll = undefined;
     dragging = { entry: e, offset, baseY, lastSent: 0, isHand };
     renderer.domElement.setPointerCapture(ev.pointerId);
     if (!isHand) opts.onCommand({ type: 'grab', objId: e.pick.id });
@@ -479,6 +534,31 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
   ro.observe(container);
   resize();
 
+  /** 再生中のサイコロを1コマ進める。まだ再生（または待機）中なら true */
+  function stepRoll(e: Entry, now: number): boolean {
+    const r = e.roll!;
+    if (r.endedAt === undefined) {
+      const pose = samplePose(r.kf, (now - r.start) / 1000);
+      e.root.position.set(pose.pos.x, pose.pos.y - DIE_SIZE / 2, pose.pos.z);
+      e.root.rotation.y = 0;
+      e.tiltNode.rotation.x = 0;
+      e.die!.quaternion.set(pose.quat.x, pose.quat.y, pose.quat.z, pose.quat.w);
+      if (!pose.done) return true;
+      // 止まった: 同じ見た目のまま「配置の回転＋出目の向き」の形に置き換える
+      r.endedAt = now;
+      e.root.position.set(r.rest.pos.x, 0, r.rest.pos.z);
+      e.root.rotation.y = r.rest.rot;
+      e.die!.rotation.copy(dieRotationFor(r.rest.value));
+    }
+    // View の配置が止まった位置に追いつくまで（または上限まで）その場で待つ
+    const o = view?.objects[e.pick.id];
+    const caught = o !== undefined && Math.hypot(o.placement.pos.x - r.rest.pos.x, o.placement.pos.z - r.rest.pos.z) < 0.01;
+    if (!caught && now - r.endedAt < ROLL_SETTLE_MS) return true;
+    e.roll = undefined;
+    if (o && o.kind === 'die') e.die!.rotation.copy(dieRotationFor(o.value));
+    return false;
+  }
+
   let last = performance.now();
   let raf = 0;
   function frame(now: number): void {
@@ -488,6 +568,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     const k = 1 - Math.exp(-dt * 14);
     for (const e of entries.values()) {
       if (dragging?.entry === e) continue;
+      if (e.roll && stepRoll(e, now)) continue;
       e.root.position.lerp(e.target, k);
       e.root.rotation.y += angleDelta(e.root.rotation.y, e.targetRotY) * k;
       e.tiltNode.rotation.x += (e.targetTilt - e.tiltNode.rotation.x) * k;
@@ -516,6 +597,13 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     refreshImages() {
       for (const e of entries.values()) applyTextures(e);
     },
+    playDiceRoll(dieId, keyframes) {
+      const e = entries.get(dieId);
+      if (!e || !e.die || keyframes.length < 8) return;
+      if (dragging?.entry === e) return;
+      e.roll = { kf: keyframes, start: performance.now(), rest: dieRestPose(keyframes) };
+    },
+    maxTextureSize: renderer.capabilities.maxTextureSize,
     dispose() {
       cancelAnimationFrame(raf);
       ro.disconnect();

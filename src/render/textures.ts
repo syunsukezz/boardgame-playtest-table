@@ -55,6 +55,7 @@ const PIPS: Record<number, [number, number][]> = {
 
 export class TextureStore {
   private readonly byHash = new Map<string, THREE.Texture>();
+  private readonly turned = new Map<string, THREE.Texture>();
   private readonly pips = new Map<number, THREE.Texture>();
   private readonly labels = new Map<string, THREE.Texture>();
   readonly placeholder = makePlaceholder();
@@ -72,6 +73,20 @@ export class TextureStore {
     if (!img) return this.placeholder;
     const tex = toTexture(img, this.anisotropy);
     this.byHash.set(hash, tex);
+    return tex;
+  }
+
+  /** 180°回したテクスチャ。カードの下面（-y）に貼ると、裏側から見て正しい向きになる */
+  getTurned(hash: string): THREE.Texture {
+    const have = this.turned.get(hash);
+    if (have) return have;
+    const base = this.get(hash);
+    if (base === this.placeholder) return base;
+    const tex = base.clone();
+    tex.center.set(0.5, 0.5);
+    tex.rotation = Math.PI;
+    tex.needsUpdate = true;
+    this.turned.set(hash, tex);
     return tex;
   }
 
@@ -117,6 +132,7 @@ export class TextureStore {
 
   dispose(): void {
     for (const t of this.byHash.values()) t.dispose();
+    for (const t of this.turned.values()) t.dispose();
     for (const t of this.pips.values()) t.dispose();
     for (const t of this.labels.values()) t.dispose();
     this.placeholder.dispose();

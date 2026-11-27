@@ -5,5 +5,8 @@ if (params.has('demo')) {
   void import('./render/dev-demo');
 } else {
   const app = document.querySelector<HTMLDivElement>('#app');
-  if (app) app.textContent = 'ボドゲ試遊卓';
+  if (app) {
+    void import('./ui/style.css');
+    void import('./app/app').then(({ startApp }) => startApp(app));
+  }
 }
