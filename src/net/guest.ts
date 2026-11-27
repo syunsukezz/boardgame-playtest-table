@@ -131,6 +131,9 @@ export class GuestSession {
   /** 操作を送る。席はホストが埋める。返り値の cmdId でエラーと対応づけられる。 */
   submit(body: CommandBody): string {
     const cmdId = `g-${randomId(this.rng, 16)}`;
+    // 落とした・離した物の、送信待ちのドラッグ位置は取りやめる（離した後に古い位置が届かないように）。
+    if (body.type === 'release' || body.type === 'move' || body.type === 'stack' || body.type === 'delete') this.drags.cancel(body.objId);
+    else if (body.type === 'toHand') this.drags.cancel(body.cardId);
     this.send({ type: 'command', cmd: { ...body, cmdId } });
     return cmdId;
   }

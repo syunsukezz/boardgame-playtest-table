@@ -22,12 +22,14 @@ export function errorMessage(reason: string): string {
 
 let container: HTMLElement | null = null;
 
-export function showToast(text: string, kind: 'info' | 'error' | 'warn' = 'info', ms = 3500): void {
+/** 通知を出す。ms が Infinity なら自動では消えない。返り値の関数で消せる。 */
+export function showToast(text: string, kind: 'info' | 'error' | 'warn' = 'info', ms = 3500): () => void {
   if (!container || !container.isConnected) {
     container = h('div', { class: 'toasts', 'aria-live': 'polite' });
     document.body.append(container);
   }
   const t = h('div', { class: `toast ${kind}` }, text);
   container.append(t);
-  setTimeout(() => t.remove(), ms);
+  if (Number.isFinite(ms)) setTimeout(() => t.remove(), ms);
+  return () => t.remove();
 }

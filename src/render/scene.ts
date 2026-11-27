@@ -403,11 +403,12 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     | { entry: Entry | undefined; x: number; y: number; button: number; pointerId: number }
     | undefined;
   let dragging:
-    | { entry: Entry; offset: THREE.Vector3; baseY: number; isHand: boolean }
+    | { entry: Entry; offset: THREE.Vector3; baseY: number; isHand: boolean; pointerId: number }
     | undefined;
 
   function onPointerDown(ev: PointerEvent): void {
     if (ev.button !== 0 && ev.button !== 2) return;
+    if (dragging) return; // ドラッグ中に別の指・ペンが触れても、ドラッグは続ける
     pressed = { entry: ev.button === 0 ? pickAt(ev) : undefined, x: ev.clientX, y: ev.clientY, button: ev.button, pointerId: ev.pointerId };
   }
 
@@ -417,7 +418,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     const offset = isHand ? new THREE.Vector3() : e.root.position.clone().sub(hit).setY(0);
     const baseY = isHand ? 0 : e.target.y;
     e.roll = undefined;
-    dragging = { entry: e, offset, baseY, isHand };
+    dragging = { entry: e, offset, baseY, isHand, pointerId: ev.pointerId };
     renderer.domElement.setPointerCapture(ev.pointerId);
     if (!isHand) opts.onCommand({ type: 'grab', objId: e.pick.id });
     if (isHand) {
@@ -428,7 +429,8 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
   }
 
   function onPointerMove(ev: PointerEvent): void {
-    if (pressed && pressed.button === 0 && !dragging && pressed.entry && isDraggable(pressed.entry)) {
+    if (dragging && ev.pointerId !== dragging.pointerId) return;
+    if (pressed && pressed.pointerId === ev.pointerId && pressed.button === 0 && !dragging && pressed.entry && isDraggable(pressed.entry)) {
       if (Math.hypot(ev.clientX - pressed.x, ev.clientY - pressed.y) > CLICK_SLOP_PX) startDrag(ev, pressed.entry);
     }
     if (!dragging) return;
@@ -442,6 +444,7 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
   }
 
   function onPointerUp(ev: PointerEvent): void {
+    if (dragging && ev.pointerId !== dragging.pointerId) return;
     const pr = pressed;
     pressed = undefined;
     if (dragging) {
@@ -473,6 +476,22 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     }
   }
 
+  /**
+   * ドラッグが途中で終わった（pointercancel、つかみの取り上げ）。落とす操作は送らず、
+   * 卓の物ならつかみだけ解いて、View の位置へ戻す。
+   */
+  function onPointerAbort(ev: PointerEvent): void {
+    if (pressed?.pointerId === ev.pointerId) pressed = undefined;
+    const d = dragging;
+    if (!d || d.pointerId !== ev.pointerId) return;
+    dragging = undefined;
+    pressed = undefined;
+    if (el.hasPointerCapture(ev.pointerId)) el.releasePointerCapture(ev.pointerId);
+    d.entry.root.position.y = d.baseY;
+    if (!d.isHand) opts.onCommand({ type: 'release', objId: d.entry.pick.id });
+    if (view) setView(view);
+  }
+
   function onDblClick(ev: MouseEvent): void {
     const e = pickAt(ev);
     if (e && e.pick.kind === 'card' && e.pick.where === 'table') opts.onCommand({ type: 'flip', cardId: e.pick.id });
@@ -486,6 +505,8 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
   el.addEventListener('pointerdown', onPointerDown);
   el.addEventListener('pointermove', onPointerMove);
   el.addEventListener('pointerup', onPointerUp);
+  el.addEventListener('pointercancel', onPointerAbort);
+  el.addEventListener('lostpointercapture', onPointerAbort);
   el.addEventListener('dblclick', onDblClick);
   el.addEventListener('contextmenu', onContextMenu);
 
@@ -556,6 +577,8 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
     setRemoteDrag(objId, pos) {
       const e = entries.get(objId);
       if (!e || dragging?.entry === e) return;
+      // 今の View でつかまれていない物は動かさない（離した後に遅れて届いた位置で浮かないように）
+      if (view?.heldBy[objId] === undefined) return;
       e.target.set(pos.x, pos.y + DRAG_LIFT, pos.z);
     },
     refreshImages(hash) {
@@ -576,6 +599,8 @@ export function createTableRenderer(container: HTMLElement, opts: TableRendererO
       el.removeEventListener('pointerdown', onPointerDown);
       el.removeEventListener('pointermove', onPointerMove);
       el.removeEventListener('pointerup', onPointerUp);
+      el.removeEventListener('pointercancel', onPointerAbort);
+      el.removeEventListener('lostpointercapture', onPointerAbort);
       el.removeEventListener('dblclick', onDblClick);
       el.removeEventListener('contextmenu', onContextMenu);
       for (const e of entries.values()) disposeEntry(e);

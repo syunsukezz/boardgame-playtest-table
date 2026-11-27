@@ -24,9 +24,12 @@ const H = DIE_SIZE / 2;
 
 let initPromise: Promise<void> | null = null;
 
-/** Rapier を初期化する（何度呼んでも1回だけ）。 */
+/** Rapier を初期化する（何度呼んでも1回だけ）。失敗したら覚えず、次の呼び出しでやり直す。 */
 export function initDicePhysics(): Promise<void> {
-  initPromise ??= RAPIER.init();
+  initPromise ??= RAPIER.init().catch((e: unknown) => {
+    initPromise = null;
+    throw e;
+  });
   return initPromise;
 }
 

@@ -15,7 +15,7 @@ class MemoryEnd implements Connection {
 
   send(msg: unknown): void {
     if (this.closed || this.stalled) return;
-    const copy = structuredClone(msg);
+    const copy = binaryLikePeerJs(structuredClone(msg));
     const to = this.peer;
     queueMicrotask(() => {
       if (to.closed || this.stalled) return;
@@ -47,6 +47,23 @@ class MemoryEnd implements Connection {
   private fireClose(): void {
     for (const cb of this.closeCbs) cb();
   }
+}
+
+/**
+ * PeerJS の binary 直列化は Uint8Array を、その範囲だけの ArrayBuffer にして届ける。
+ * 受け取り側がそれを扱えるか確かめられるよう、同じ形にそろえる（複製後の値をその場で書き換える）。
+ */
+function binaryLikePeerJs<T>(v: T): T {
+  if (v instanceof Uint8Array) return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) as T;
+  if (Array.isArray(v)) {
+    for (let i = 0; i < v.length; i++) v[i] = binaryLikePeerJs(v[i]);
+    return v;
+  }
+  if (typeof v === 'object' && v !== null && !(v instanceof ArrayBuffer)) {
+    const o = v as Record<string, unknown>;
+    for (const k of Object.keys(o)) o[k] = binaryLikePeerJs(o[k]);
+  }
+  return v;
 }
 
 export interface MemoryLink {

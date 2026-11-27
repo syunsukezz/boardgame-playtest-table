@@ -113,10 +113,12 @@ describe('漏れがないこと', () => {
               visibility: pick(['recipient', 'others', 'none', 'all'] as const),
             },
           );
+          // 山札ごと消すと残りの操作が減るので、たまにだけ
+          if (rng.next() < 0.2) options.push({ type: 'delete', objId: st });
         }
         if (tableCards.length) {
           const c = pick(tableCards);
-          options.push({ type: 'flip', cardId: c }, { type: 'toHand', cardId: c });
+          options.push({ type: 'flip', cardId: c }, { type: 'toHand', cardId: c }, { type: 'delete', objId: c });
           if (stacks.length) options.push({ type: 'stack', objId: c, targetId: pick(stacks) });
         }
         if (handCards.length) {
@@ -124,6 +126,7 @@ describe('漏れがないこと', () => {
           options.push(
             { type: 'play', cardId: c, pos: origin.pos, faceUp: rng.next() < 0.5 },
             { type: 'setVisibility', cardId: c, visibility: { kind: 'seats', seats: [Math.floor(rng.next() * 8)] } },
+            { type: 'delete', objId: c },
           );
         }
         if (!options.length) break;
@@ -140,7 +143,7 @@ describe('漏れがないこと', () => {
         }
       }
     }
-  });
+  }, 60_000); // 重い総当たりなので、負荷の高い環境でも時間切れにならないよう上限を延ばす
 });
 
 /** テスト側で独立に書いた「見えてよい」の定義（R5）。 */

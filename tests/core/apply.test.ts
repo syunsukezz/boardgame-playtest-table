@@ -254,3 +254,56 @@ describe('ログに流す出来事', () => {
     expect(r.log).toEqual([{ type: 'play', seat: 1, cardId: id, faceUp: true }]);
   });
 });
+
+describe('引数の誤り', () => {
+  it.each([0, -1, 1.5])('引く・配る枚数が %s なら invalid-args で、状態は変わらない', (count) => {
+    const { state, stackId } = withDeck(5);
+    const draw = apply(state, cmd(1, { type: 'draw', stackId, count }), seededRng(1));
+    expect(draw).toMatchObject({ ok: false, error: 'invalid-args' });
+    const deal = apply(state, cmd(0, { type: 'deal', stackId, count, seats: [1], visibility: 'recipient' }), seededRng(1));
+    expect(deal).toMatchObject({ ok: false, error: 'invalid-args' });
+    expect(stackOf(state, stackId).cardIds).toHaveLength(5);
+  });
+
+  it('型の外の見える人（配る・見える人の変更）は invalid-args になる', () => {
+    const { state, stackId } = withDeck(5);
+    const deal = apply(
+      state,
+      cmd(0, { type: 'deal', stackId, count: 1, seats: [1], visibility: 'bogus' } as unknown as CommandBody),
+      seededRng(1),
+    );
+    expect(deal).toMatchObject({ ok: false, error: 'invalid-args' });
+    const s = run(state, 1, { type: 'draw', stackId, count: 1 }).state;
+    const cardId = s.hands[1]![0]!;
+    for (const visibility of [{ kind: 'bogus' }, { kind: 'seats', seats: 3 }, null]) {
+      const r = apply(
+        s,
+        cmd(1, { type: 'setVisibility', cardId, visibility } as unknown as CommandBody),
+        seededRng(1),
+      );
+      expect(r).toMatchObject({ ok: false, error: 'invalid-args' });
+    }
+  });
+});
+
+describe('消す', () => {
+  it('手札のカードを消すと、手札の並びからも消える', () => {
+    const { state, stackId } = withDeck(3);
+    const s = run(state, 1, { type: 'draw', stackId, count: 2 }).state;
+    const [first, second] = s.hands[1]!;
+    const r = run(s, 1, { type: 'delete', objId: first! }).state;
+    expect(r.cards[first!]).toBeUndefined();
+    expect(r.hands[1]).toEqual([second]);
+  });
+
+  it('山札の中のカードを消すと、山札の並びからも消え、空になれば山札も消える', () => {
+    const { state, stackId } = withDeck(2);
+    const [bottom, top] = stackOf(state, stackId).cardIds;
+    const s = run(state, 0, { type: 'delete', objId: bottom! }).state;
+    expect(s.cards[bottom!]).toBeUndefined();
+    expect(stackOf(s, stackId).cardIds).toEqual([top]);
+    const s2 = run(s, 0, { type: 'delete', objId: top! }).state;
+    expect(s2.objects[stackId]).toBeUndefined();
+    expect(Object.keys(s2.cards)).toHaveLength(0);
+  });
+});

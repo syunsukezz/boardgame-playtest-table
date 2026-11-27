@@ -6,6 +6,7 @@ import { formatLog, type SeatName } from '../core/log';
 import { project, type View, type Viewer } from '../core/project';
 import { cryptoRng, randomId, randomInt, type Rng } from '../core/rng';
 import { emptyState, seatLabel, type ObjectId, type SeatId, type TableState, type Vec3 } from '../core/state';
+import { parseVec3, validateCommandBody } from '../core/validate-command';
 import type { AssetStore } from '../assets/store';
 import { AssetSendTracker, chunkAsset, neededAssetHashes } from '../assets/transfer';
 import { sanitizeChat } from './chat';
@@ -26,6 +27,8 @@ export interface HostSessionOptions {
   transport: HostTransport;
   assets: AssetStore;
   rng?: Rng;
+  /** ホスト（席0）の表示名。既定の seatName が使う。省くと「ホスト」。 */
+  hostName?: string;
   seatName?: SeatName;
   rollDice?: (dieId: string) => RollOutcome;
   clock?: Clock;
@@ -86,7 +89,8 @@ export class HostSession {
     this.rng = opts.rng ?? cryptoRng();
     this.clock = opts.clock ?? realClock;
     this.seatName =
-      opts.seatName ?? ((seat) => (seat === HOST_SEAT ? 'ホスト' : (this.seats.nameOf(seat) ?? seatLabel(seat))));
+      opts.seatName ??
+      ((seat) => (seat === HOST_SEAT ? (opts.hostName ?? 'ホスト') : (this.seats.nameOf(seat) ?? seatLabel(seat))));
     this.rollDice = opts.rollDice ?? (() => ({ value: 1 + randomInt(this.rng, 6) }));
     opts.transport.onConnection((c) => this.handleConnection(c));
     this.unsubAssets = opts.assets.onAdded(() => {
@@ -277,7 +281,14 @@ export class HostSession {
     conn.onMessage((m) => {
       if (this.peers.get(conn.id) !== peer) return;
       peer.heartbeat.touch();
-      if (hasType(m)) this.handleMessage(peer, m as GuestToHost);
+      if (!hasType(m)) return;
+      // 1つの壊れたメッセージで PeerJS の受信処理ごと止まらないよう、ここで受け止める。
+      try {
+        this.handleMessage(peer, m as GuestToHost);
+      } catch (e) {
+        console.error('参加者のメッセージの処理に失敗しました', e);
+        if (this.peers.get(conn.id) === peer) this.send(peer, { type: 'error', reason: 'invalid-args' });
+      }
     });
     conn.onClose(() => this.handleClose(conn.id));
     peer.heartbeat.start();
@@ -316,10 +327,12 @@ export class HostSession {
         return this.handleSit(peer, msg.seat);
       case 'command':
         return this.handleCommand(peer, seat, msg.cmd);
-      case 'drag':
-        if (seat === null || this.state.heldBy[msg.objId] !== seat) return;
+      case 'drag': {
+        const pos = parseVec3(msg.pos);
+        if (seat === null || typeof msg.objId !== 'string' || !pos || this.state.heldBy[msg.objId] !== seat) return;
         this.grabTouched.set(msg.objId, this.clock.now());
-        return this.relayDrag(msg.objId, msg.pos, seat, peer.conn.id);
+        return this.relayDrag(msg.objId, pos, seat, peer.conn.id);
+      }
       case 'chat': {
         const t = sanitizeChat(msg.text);
         if (t !== null) this.broadcastChat(peer.name, t);
@@ -404,13 +417,14 @@ export class HostSession {
       this.send(peer, { type: 'error', ...(cmdId !== undefined ? { cmdId } : {}), reason: 'not-seated' });
       return;
     }
-    if (!hasType(raw) || cmdId === undefined) {
-      this.send(peer, { type: 'error', reason: 'invalid-args' });
+    const body = validateCommandBody(raw);
+    if (!body || cmdId === undefined) {
+      this.send(peer, { type: 'error', ...(cmdId !== undefined ? { cmdId } : {}), reason: 'invalid-args' });
       return;
     }
-    for (const id of referencedIds(raw)) if (this.state.heldBy[id] === seat) this.grabTouched.set(id, this.clock.now());
+    for (const id of referencedIds(body)) if (this.state.heldBy[id] === seat) this.grabTouched.set(id, this.clock.now());
     // 席は接続から埋める。参加者が送った seat は使わない。
-    const r = this.applyCommand({ ...raw, seat, cmdId } as Command);
+    const r = this.applyCommand({ ...body, seat, cmdId } as Command);
     if (!r.ok) this.send(peer, { type: 'error', cmdId, reason: r.error });
   }
 
@@ -422,8 +436,11 @@ export class HostSession {
     }
     const r = apply(this.state, cmd, this.rng);
     if (!r.ok) return r;
+    const prevHeld = this.state.heldBy;
     this.state = r.state;
     this.syncGrabTimes();
+    // つかみが解けた・持ち主が変わった物の、中継待ちのドラッグを取りやめる。
+    for (const [id, s] of Object.entries(prevHeld)) if (this.state.heldBy[id] !== s) this.drags.cancel(id);
     // 転がる動きを先に送り、出目の反映（View）が後から届くようにする。
     const keyframes = cmd.type === 'roll' ? cmd.outcome?.keyframes : undefined;
     if (cmd.type === 'roll' && keyframes) {
@@ -515,6 +532,8 @@ export class HostSession {
   }
 
   private emitDrag(objId: ObjectId, pos: Vec3, seat: SeatId, from: string): void {
+    // 離した後に後縁の中継が出ると、ほかの画面で物が浮いたまま残る。つかんでいる席の分だけ送る。
+    if (this.state.heldBy[objId] !== seat) return;
     for (const p of this.joinedPeers()) if (p.conn.id !== from) this.send(p, { type: 'drag', objId, pos, seat });
     // ホスト自身のドラッグはホストの画面へ返さない。
     if (from !== 'host') this.dragEv.emit(objId, pos, seat);
@@ -558,10 +577,10 @@ function cleanName(name: unknown): string {
 }
 
 /** 操作が触れる物の ID（つかみの最終操作時刻の更新用）。 */
-function referencedIds(cmd: Record<string, unknown>): string[] {
+function referencedIds(cmd: CommandBody): string[] {
   const ids: string[] = [];
   for (const k of ['objId', 'cardId', 'stackId', 'dieId', 'targetId']) {
-    const v = cmd[k];
+    const v = (cmd as Record<string, unknown>)[k];
     if (typeof v === 'string') ids.push(v);
   }
   return ids;

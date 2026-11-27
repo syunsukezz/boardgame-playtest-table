@@ -89,6 +89,10 @@ export function openImportDialog(o: ImportDialogOptions): void {
   const boardBox = h('div', { class: 'field' }, h('div', {}, '盤面の画像'), boardFile);
 
   const status = h('p', { class: 'muted', 'aria-live': 'polite' });
+  /** 取り込み中は OK を押せないようにし、入力を変えても押せるように戻さない。 */
+  let busy = false;
+  /** キャンセルされた。取り込み途中なら、以後は画像も山札も追加しない。 */
+  let cancelled = false;
 
   const update = (): void => {
     const deck = kindDeck.checked;
@@ -96,7 +100,7 @@ export function openImportDialog(o: ImportDialogOptions): void {
     boardBox.hidden = deck;
     singleBox.hidden = !modeSingle.checked;
     sheetBox.hidden = modeSingle.checked;
-    dlg.setOkEnabled(valid());
+    dlg.setOkEnabled(!busy && valid());
   };
   const intIn = (el: HTMLInputElement): number | null => {
     const n = Number(el.value);
@@ -109,41 +113,66 @@ export function openImportDialog(o: ImportDialogOptions): void {
   };
 
   const run = async (): Promise<boolean> => {
+    if (busy || !valid()) return false;
+    busy = true;
+    dlg.setOkEnabled(false);
+    // 始めた時点の入力で最後まで進める（途中で選び直されても混ざらないように）
+    const input = {
+      board: kindBoard.checked,
+      single: modeSingle.checked,
+      boardFile: boardFile.files?.[0],
+      faceFiles: [...(faceFiles.files ?? [])],
+      sheetFile: sheetFile.files?.[0],
+      rows: intIn(rows),
+      cols: intIn(cols),
+      backFile: backFile.files?.[0],
+    };
+    /** キャンセル後は何も追加しない。 */
+    const put = (a: StoredAsset): boolean => {
+      if (cancelled) return false;
+      o.assets.put(a);
+      return true;
+    };
     status.textContent = '取り込み中…（画像を縮めています）';
     try {
-      if (kindBoard.checked) {
-        const file = boardFile.files![0]!;
-        const a = await importImage(file, BOARD_MAX_EDGE, o.maxTextureSize);
-        o.assets.put(a);
+      if (input.board) {
+        const a = await importImage(input.boardFile!, BOARD_MAX_EDGE, o.maxTextureSize);
+        if (!put(a)) return false;
         const { width, height } = await imageSize(a);
+        if (cancelled) return false;
         const size = boardSize(width, height);
         o.submit({ type: 'spawnBoard', imageHash: a.hash, width: size.width, depth: size.depth, placement: o.placement() });
         return true;
       }
-      const back = await importImage(backFile.files?.[0] ?? (await defaultBack()), CARD_MAX_EDGE);
-      o.assets.put(back);
+      const back = await importImage(input.backFile ?? (await defaultBack()), CARD_MAX_EDGE);
+      if (!put(back)) return false;
       const cards: NewCardSpec[] = [];
-      if (modeSingle.checked) {
-        const files = [...faceFiles.files!];
+      if (input.single) {
+        const files = input.faceFiles;
         for (let i = 0; i < files.length; i++) {
           status.textContent = `取り込み中… ${i + 1}/${files.length}`;
           const a = await importImage(files[i]!, CARD_MAX_EDGE);
-          o.assets.put(a);
+          if (!put(a)) return false;
           cards.push({ faceHash: a.hash, backHash: back.hash, name: cardNameFromFile(files[i]!.name, i) });
         }
       } else {
-        const list = await importSheet(sheetFile.files![0]!, intIn(rows)!, intIn(cols)!, CARD_MAX_EDGE);
-        list.forEach((a, i) => {
-          o.assets.put(a);
+        const list = await importSheet(input.sheetFile!, input.rows!, input.cols!, CARD_MAX_EDGE);
+        for (const [i, a] of list.entries()) {
+          if (!put(a)) return false;
           cards.push({ faceHash: a.hash, backHash: back.hash, name: `カード${i + 1}` });
-        });
+        }
       }
+      if (cancelled) return false;
       o.submit({ type: 'spawnDeck', cards, placement: o.placement() });
       return true;
     } catch (e) {
       console.error(e);
-      status.textContent = `取り込めませんでした: ${e instanceof Error ? e.message : String(e)}`;
+      if (!cancelled) status.textContent = `取り込めませんでした: ${e instanceof Error ? e.message : String(e)}`;
       return false;
+    } finally {
+      busy = false;
+      // ダイアログが OK を押せる状態に戻した後で、今の入力に合わせ直す
+      if (!cancelled) setTimeout(update, 0);
     }
   };
 
@@ -157,6 +186,9 @@ export function openImportDialog(o: ImportDialogOptions): void {
     ],
     okLabel: '取り込む',
     onOk: run,
+    onCancel: () => {
+      cancelled = true;
+    },
   });
   dlg.root.addEventListener('change', update);
   dlg.root.addEventListener('input', update);

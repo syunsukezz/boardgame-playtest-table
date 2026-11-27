@@ -45,6 +45,14 @@ export class DragThrottle<V> {
     }, Math.max(0, this.intervalMs - (now - d.last)));
   }
 
+  /** その物の、待っている送信を取りやめる（離した・落とした後に古い位置を送らないように）。 */
+  cancel(key: string): void {
+    const d = this.slots.get(key);
+    if (!d) return;
+    if (d.timer) clearTimeout(d.timer);
+    this.slots.delete(key);
+  }
+
   /** 待っている送信をすべて取りやめる。 */
   dispose(): void {
     for (const d of this.slots.values()) if (d.timer) clearTimeout(d.timer);

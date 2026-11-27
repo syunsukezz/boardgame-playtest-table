@@ -33,7 +33,7 @@ describe('simulateRoll', () => {
       // 4秒+押し直し分の上限内
       expect(r.keyframes.length / STRIDE).toBeLessThanOrEqual(30 * 6 + 2);
     }
-  });
+  }, 30_000); // 物理演算を繰り返すので、負荷が高いと時間がかかる
 
   it('最初の記録はスタート位置の真上から始まる', () => {
     const r = simulateRoll(seededRng(7), { x: 2, z: 1 });

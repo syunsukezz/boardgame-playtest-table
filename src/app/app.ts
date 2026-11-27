@@ -6,12 +6,11 @@ import { HOST_SEAT } from '../net/seats';
 import type { SeatId } from '../core/state';
 import { GuestSession } from '../net/guest';
 import { HostSession } from '../net/host';
-import { createPeerGuest, createPeerHost } from '../net/peerjs-transport';
+import { createPeerGuest, createPeerHost, type PeerHostTransport } from '../net/peerjs-transport';
 import { inviteUrl, parseRoomFromHash } from '../net/room';
 import { ConnectionError, type ConnectionFailure } from '../net/transport';
 import { dieRestPose } from '../render/scene';
 import { failureMessage, renderStatusScreen } from '../ui/connection-error';
-import { seatLabel } from '../ui/dom';
 import { renderLobby } from '../ui/lobby';
 import { loadTable, saveTable } from '../ui/save-load-panel';
 import { errorMessage, showToast } from '../ui/toast';
@@ -44,7 +43,7 @@ function backToLobbyAction(root: HTMLElement): { label: string; run(): void } {
 
 async function startHost(root: HTMLElement, name: string): Promise<void> {
   renderStatusScreen(root, '部屋を作っています…', '接続の仲介サーバーに登録しています。', []);
-  let transport;
+  let transport: PeerHostTransport;
   let simulateRoll: typeof import('../dice/simulate').simulateRoll;
   try {
     // 物理演算（Rapier）はホストだけが使うので、ここで読み込む（参加者は読み込まない）
@@ -52,7 +51,14 @@ async function startHost(root: HTMLElement, name: string): Promise<void> {
       await m.initDicePhysics();
       return m.simulateRoll;
     });
-    [transport, simulateRoll] = await Promise.all([createPeerHost(), loadDice]);
+    // 片方だけ成功しても、もう片方の失敗で部屋を作れないときは、立てた部屋を閉じる。
+    const [t, d] = await Promise.allSettled([createPeerHost(), loadDice]);
+    if (t.status === 'rejected' || d.status === 'rejected') {
+      if (t.status === 'fulfilled') t.value.close();
+      throw t.status === 'rejected' ? t.reason : (d as PromiseRejectedResult).reason;
+    }
+    transport = t.value;
+    simulateRoll = d.value;
   } catch (e) {
     const reason: ConnectionFailure = e instanceof ConnectionError ? e.reason : 'unknown';
     console.error(e);
@@ -68,7 +74,7 @@ async function startHost(root: HTMLElement, name: string): Promise<void> {
   const host: HostSession = new HostSession({
     transport,
     assets,
-    seatName: (seat) => (seat === HOST_SEAT ? name : (host.getSeats()[seat]?.name ?? seatLabel(seat))),
+    hostName: name,
     // 出目はホストが物理演算で決める（KTD7）。投げ始めはサイコロの今の位置。
     rollDice: (dieId) => {
       const o = host.getState().objects[dieId];
@@ -156,6 +162,21 @@ async function startHost(root: HTMLElement, name: string): Promise<void> {
   host.onNotice((t) => showToast(t, 'info', 5000));
   host.onCommandError((reason) => showToast(errorMessage(reason), 'error'));
   host.onRemoteDrag((id, pos) => screen.renderer.setRemoteDrag(id, pos));
+  // 仲介サーバーから切れている間は、新しい参加者・切れた参加者の再接続が入れない
+  let dismissSignaling: (() => void) | null = null;
+  transport.onSignalingStatus?.((s) => {
+    dismissSignaling?.();
+    dismissSignaling = null;
+    if (s === 'lost') {
+      dismissSignaling = showToast(
+        '接続の仲介サーバーから切れました。再接続しています… その間、新しい参加者や切れた参加者は入れません（今つながっている人はそのまま遊べます）',
+        'warn',
+        Infinity,
+      );
+    } else {
+      showToast('接続の仲介サーバーにつながり直しました', 'info');
+    }
+  });
   host.onDiceRoll((dieId, keyframes) => {
     screen.renderer.playDiceRoll(dieId, keyframes);
   });

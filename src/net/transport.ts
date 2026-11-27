@@ -9,8 +9,13 @@ export interface Connection {
   close(): void;
 }
 
+/** 仲介サーバー（シグナリング）とのつながり。lost の間は新しい参加者・再接続が入れない。 */
+export type SignalingStatus = 'ok' | 'lost';
+
 export interface HostTransport {
   onConnection(cb: (c: Connection) => void): void;
+  /** 仲介サーバーとのつながりの変化。対応しない通信路（テスト用など）は省いてよい。購読解除の関数を返す。 */
+  onSignalingStatus?(cb: (s: SignalingStatus) => void): () => void;
   close(): void;
 }
 

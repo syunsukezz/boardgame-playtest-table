@@ -276,7 +276,9 @@ describe('満席と途中参加（R9, R26）', () => {
     }
     const ninth = await addGuest('P9');
     expect(ninth.statuses).toContain('full');
-    expect(ninth.link.hostSide.received.length).toBeGreaterThanOrEqual(0);
+    const ninthTypes = ninth.link.guestSide.received.map((m) => (m as { type: string }).type);
+    expect(ninthTypes).toContain('roomFull');
+    expect(ninthTypes).not.toContain('snapshot');
 
     host.submit({ type: 'deal', stackId, count: 1, seats: [1, 2, 3], visibility: 'recipient' });
     await flush();
@@ -324,6 +326,20 @@ describe('取り直し（KTD2）', () => {
 });
 
 describe('チャット（R11）', () => {
+  it('hostName を渡すと、ホストの発言とログの名前になる', async () => {
+    host.close();
+    net = createMemoryNetwork();
+    hostAssets = new AssetStore();
+    host = new HostSession({ transport: net.host, assets: hostAssets, rng: seededRng(7), hostName: 'ゆう' });
+    const a = await addGuest('A');
+    await sit(a, 1);
+    const got: string[] = [];
+    a.g.onChat((from) => got.push(from));
+    host.chat('やあ');
+    await flush();
+    expect(got).toEqual(['ゆう']);
+  });
+
   it('HTML のような文字列もそのまま届き、長すぎる文は500文字に切られる', async () => {
     const a = await addGuest('A');
     const b = await addGuest('B');
@@ -430,6 +446,8 @@ describe('生存確認とつかみ（KTD6, KTD10）', () => {
     const hostDrags: unknown[] = [];
     a.g.onRemoteDrag((objId, pos, seat) => aDrags.push({ objId, pos, seat }));
     host.onRemoteDrag((objId, pos, seat) => hostDrags.push({ objId, pos, seat }));
+    // 画面はドラッグを始めるときにつかむ（つかんでいない物の位置は中継しない）
+    host.submit({ type: 'grab', objId: pieceId });
     host.drag(pieceId, { x: 3, y: 0, z: 1 });
     await flush(200);
     expect(aDrags).toEqual([{ objId: pieceId, pos: { x: 3, y: 0, z: 1 }, seat: 0 }]);
@@ -465,8 +483,14 @@ describe('生存確認とつかみ（KTD6, KTD10）', () => {
 });
 
 describe('画像の配布（KTD4）', () => {
+  /** ハッシュごとに中身の違う画像。チャンクの境目をまたぐよう少し大きくする。 */
+  function bytesOf(hash: string): Uint8Array {
+    const b = new Uint8Array(70 * 1024 + hash.length);
+    for (let i = 0; i < b.length; i++) b[i] = (i * 31 + hash.charCodeAt(i % hash.length)) & 0xff;
+    return b;
+  }
   function putAsset(hash: string): void {
-    hostAssets.put({ hash, mime: 'image/png', bytes: new Uint8Array([1, 2, 3]) });
+    hostAssets.put({ hash, mime: 'image/png', bytes: bytesOf(hash) });
   }
   function begins(link: MemoryLink): string[] {
     return link.guestSide.received
@@ -489,6 +513,9 @@ describe('画像の配布（KTD4）', () => {
     await flush();
     const aFace = handFaces(host.getState(), 1)[0]!;
     expect(a.assets.has(aFace)).toBe(true);
+    // PeerJS のバイナリ送信と同じく ArrayBuffer で届いても、中身がそろう
+    expect(a.assets.get(aFace)!.bytes).toEqual(bytesOf(aFace));
+    expect(a.assets.get('back')!.bytes).toEqual(bytesOf('back'));
     expect(begins(b.link)).not.toContain(aFace);
 
     const cardId = host.getState().hands[1]![0]!;
@@ -496,6 +523,7 @@ describe('画像の配布（KTD4）', () => {
     await flush();
     expect(begins(b.link)).toContain(aFace);
     expect(b.assets.has(aFace)).toBe(true);
+    expect(b.assets.get(aFace)!.bytes).toEqual(bytesOf(aFace));
     // A には二度送られない
     expect(begins(a.link).filter((h) => h === aFace)).toHaveLength(1);
     expect(begins(a.link).filter((h) => h === 'back')).toHaveLength(1);
@@ -536,5 +564,120 @@ describe('保存の読み込み（R21）', () => {
     const b = await addGuest('B');
     await sit(b, 2);
     expect(b.g.getSeat()).toBe(2);
+  });
+});
+
+describe('壊れた操作への耐性', () => {
+  /** 参加者の接続から生のメッセージを送る（GuestSession を通さない）。 */
+  function sendRaw(x: G, msg: unknown): void {
+    x.link.guestSide.send(msg);
+  }
+  function errorsOf(x: G): string[] {
+    return x.link.guestSide.received
+      .filter((m) => (m as { type: string }).type === 'error')
+      .map((m) => (m as { reason: string }).reason);
+  }
+
+  it('不正な見える人・配列でない席・位置の無い移動は invalid-args で拒否され、部屋はほかの参加者に配信を続ける', async () => {
+    const stackId = spawnDeck(6);
+    host.submit({ type: 'spawnPiece', shape: 'cube', color: '#f00', placement: origin });
+    const pieceId = Object.values(host.getState().objects).find((o) => o.kind === 'piece')!.id;
+    const a = await addGuest('A');
+    const b = await addGuest('B');
+    await sit(a, 1);
+    await sit(b, 2);
+    const rev = host.getState().rev;
+    const bad: unknown[] = [
+      { type: 'deal', stackId, count: 1, seats: [1], visibility: 'bogus', cmdId: 'x1' },
+      { type: 'deal', stackId, count: 1, seats: 1, visibility: 'recipient', cmdId: 'x2' },
+      { type: 'move', objId: pieceId, cmdId: 'x3' },
+      { type: 'move', objId: pieceId, pos: { x: 'a', y: 0, z: 0 }, cmdId: 'x4' },
+      { type: 'setVisibility', cardId: 'c', visibility: { kind: 'seats' }, cmdId: 'x5' },
+      { type: 'spawnDeck', cards: [{ faceHash: 1 }], placement: origin, cmdId: 'x6' },
+      { type: 'nope', cmdId: 'x7' },
+    ];
+    for (const cmd of bad) sendRaw(a, { type: 'command', cmd });
+    await flush();
+    expect(errorsOf(a)).toEqual(Array(bad.length).fill('invalid-args'));
+    expect(errorsOf(b)).toEqual([]);
+    expect(host.getState().rev).toBe(rev);
+    // 部屋は動き続ける
+    b.g.submit({ type: 'draw', stackId, count: 1 });
+    await flush();
+    expect(host.getState().hands[2]).toHaveLength(1);
+    expect(a.g.getView()!.rev).toBe(host.getState().rev);
+    expect(b.g.getView()).toEqual(project(host.getState(), { kind: 'seat', seat: 2 }));
+  });
+
+  it('数値でないドラッグ位置は中継しない', async () => {
+    host.submit({ type: 'spawnPiece', shape: 'cube', color: '#f00', placement: origin });
+    const pieceId = Object.keys(host.getState().objects)[0]!;
+    const a = await addGuest('A');
+    const b = await addGuest('B');
+    await sit(a, 1);
+    await sit(b, 2);
+    a.g.submit({ type: 'grab', objId: pieceId });
+    await flush();
+    const bDrags: unknown[] = [];
+    b.g.onRemoteDrag((objId, pos) => bDrags.push({ objId, pos }));
+    sendRaw(a, { type: 'drag', objId: pieceId, pos: { x: 'x', y: 0, z: 0 } });
+    sendRaw(a, { type: 'drag', objId: pieceId });
+    sendRaw(a, { type: 'drag', objId: pieceId, pos: { x: Infinity, y: 0, z: 0 } });
+    await flush(200);
+    expect(bDrags).toEqual([]);
+  });
+
+  it('処理中に例外が出ても、データの受信処理から外へ漏れず、その参加者にだけ理由を返す', async () => {
+    host.close();
+    net = createMemoryNetwork();
+    hostAssets = new AssetStore();
+    host = new HostSession({
+      transport: net.host,
+      assets: hostAssets,
+      rng: seededRng(7),
+      rollDice: () => {
+        throw new Error('物理演算の失敗');
+      },
+    });
+    host.submit({ type: 'spawnDie', placement: origin });
+    const dieId = Object.keys(host.getState().objects)[0]!;
+    const a = await addGuest('A');
+    const b = await addGuest('B');
+    await sit(a, 1);
+    await sit(b, 2);
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // MemoryEnd は受信コールバックの例外をそのまま投げるので、漏れれば未処理の例外になる
+    a.g.submit({ type: 'roll', dieId });
+    await flush();
+    spy.mockRestore();
+    expect(errorsOf(a)).toEqual(['invalid-args']);
+    expect(errorsOf(b)).toEqual([]);
+    b.g.chat('まだ動いている');
+    await flush();
+    expect(a.link.guestSide.received.some((m) => (m as { type: string }).type === 'chat')).toBe(true);
+  });
+});
+
+describe('離した後のドラッグ中継', () => {
+  it('参加者が動かして離した後、ほかの参加者に drag が届かない', async () => {
+    host.submit({ type: 'spawnPiece', shape: 'cube', color: '#f00', placement: origin });
+    const pieceId = Object.keys(host.getState().objects)[0]!;
+    const a = await addGuest('A');
+    const b = await addGuest('B');
+    await sit(a, 1);
+    await sit(b, 2);
+    a.g.submit({ type: 'grab', objId: pieceId });
+    await flush();
+    // 間隔内に2回送り、2回目が後縁で中継待ちになるようにする
+    a.g.drag(pieceId, { x: 1, y: 0, z: 0 });
+    await flush();
+    const mark = b.link.guestSide.received.length;
+    a.link.guestSide.send({ type: 'drag', objId: pieceId, pos: { x: 2, y: 0, z: 0 } });
+    a.g.submit({ type: 'move', objId: pieceId, pos: { x: 2, y: 0, z: 0 } });
+    a.g.submit({ type: 'release', objId: pieceId });
+    await flush(300);
+    const after = b.link.guestSide.received.slice(mark).map((m) => (m as { type: string }).type);
+    expect(after).not.toContain('drag');
+    expect(host.getState().heldBy[pieceId]).toBeUndefined();
   });
 });

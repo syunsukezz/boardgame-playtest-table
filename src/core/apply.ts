@@ -148,7 +148,7 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
     }
     case 'deal': {
       requirePositiveInt(cmd.count);
-      if (cmd.seats.length === 0 || cmd.seats.some((s) => !isSeatId(s))) fail('invalid-args');
+      if (!Array.isArray(cmd.seats) || cmd.seats.length === 0 || cmd.seats.some((s) => !isSeatId(s))) fail('invalid-args');
       ensureNotHeldByOther(state, cmd.stackId, seat);
       const stack = requireStack(state, cmd.stackId);
       const wanted = cmd.count * cmd.seats.length;
@@ -264,11 +264,16 @@ function dealVisibility(v: DealVisibility, to: SeatId): Visibility {
       return { kind: 'none' };
     case 'all':
       return { kind: 'all' };
+    default:
+      // 型の外の値（壊れた操作）。ホストの検証をすり抜けても状態を壊さない。
+      return fail('invalid-args');
   }
 }
 
 function normalizeVisibility(v: Visibility): Visibility {
-  if (v.kind !== 'seats') return { kind: v.kind };
+  if (typeof v !== 'object' || v === null) fail('invalid-args');
+  if (v.kind === 'all' || v.kind === 'none') return { kind: v.kind };
+  if (v.kind !== 'seats' || !Array.isArray(v.seats)) fail('invalid-args');
   const seats = normalizeSeats(v.seats);
   if (seats.length === 0) return { kind: 'none' };
   return { kind: 'seats', seats };
