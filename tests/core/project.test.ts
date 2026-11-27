@@ -80,7 +80,7 @@ describe('席ごとの切り出し', () => {
   it('未着席の参加者には、全員に見えるカード以外の中身が届かない', () => {
     const { state, stackId } = withDeck(6);
     let s = run(state, 0, { type: 'deal', stackId, count: 1, seats: [0, 1], visibility: 'recipient' }).state;
-    s = run(s, 0, { type: 'setVisibility', cardId: s.hands[1]![0]!, visibility: { kind: 'all' } }).state;
+    s = run(s, 1, { type: 'setVisibility', cardId: s.hands[1]![0]!, visibility: { kind: 'all' } }).state;
     const v = project(s, { kind: 'spectator' });
     expect(seesFace(v, s.hands[0]![0]!)).toBe(false);
     expect(seesFace(v, s.hands[1]![0]!)).toBe(true);

@@ -83,6 +83,8 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
       ensureNotHeldByOther(state, cmd.objId, seat);
       ensureNotHeldByOther(state, cmd.targetId, seat);
       if (cmd.objId === cmd.targetId) fail('invalid-target');
+      const source = state.cards[cmd.objId];
+      if (source) ensureOwnHand(source, seat);
       const target = resolveStackTarget(state, cmd.targetId, rng);
       const moving = takeForStacking(state, cmd.objId);
       for (const id of moving) {
@@ -117,6 +119,7 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
     case 'play': {
       const card = requireCard(state, cmd.cardId);
       if (card.loc.type !== 'hand') fail('invalid-target');
+      ensureOwnHand(card, seat);
       removeFromHand(state, card);
       const faceUp = cmd.faceUp ?? true;
       card.loc = tableLoc(cmd.pos, faceUp);
@@ -167,6 +170,7 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
     case 'setVisibility': {
       const card = requireCard(state, cmd.cardId);
       if (card.loc.type !== 'hand') fail('invalid-target');
+      ensureOwnHand(card, seat);
       card.loc.visibility = normalizeVisibility(cmd.visibility);
       log.push({ type: 'setVisibility', seat, cardId: card.id });
       return;
@@ -226,6 +230,7 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
       ensureNotHeldByOther(state, cmd.objId, seat);
       const card = state.cards[cmd.objId];
       if (card) {
+        ensureOwnHand(card, seat);
         if (card.loc.type === 'hand') removeFromHand(state, card);
         if (card.loc.type === 'stack') removeFromStack(state, card);
         delete state.cards[card.id];
@@ -293,6 +298,11 @@ function clonePlacement(p: Placement): Placement {
 function ensureNotHeldByOther(state: TableState, id: ObjectId, seat: SeatId): void {
   const holder = state.heldBy[id];
   if (holder !== undefined && holder !== seat) fail('held-by-other');
+}
+
+/** 手札のカードは持ち主の席だけが操作できる（隠れた手札を他の席が覗けないように）。 */
+function ensureOwnHand(card: Card, seat: SeatId): void {
+  if (card.loc.type === 'hand' && card.loc.seat !== seat) fail('not-your-card');
 }
 
 function requireCard(state: TableState, id: ObjectId): Card {

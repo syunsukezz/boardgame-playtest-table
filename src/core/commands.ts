@@ -64,4 +64,6 @@ export type ApplyError =
   | 'held-by-other'
   | 'invalid-target'
   | 'invalid-args'
-  | 'duplicate';
+  | 'duplicate'
+  /** ほかの席の手札は操作できない（持ち主の席だけ）。 */
+  | 'not-your-card';

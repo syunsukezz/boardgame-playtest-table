@@ -180,6 +180,35 @@ describe('場所を移るときの見える人（R19）', () => {
   });
 });
 
+describe('手札は持ち主の席だけが操作できる', () => {
+  function dealtToSeat1() {
+    const { state, stackId } = withDeck(4);
+    const s = run(state, 0, { type: 'deal', stackId, count: 1, seats: [1], visibility: 'recipient' }).state;
+    return { state: s, cardId: s.hands[1]![0]!, stackId };
+  }
+  const ops = (cardId: string, stackId: string): CommandBody[] => [
+    { type: 'setVisibility', cardId, visibility: { kind: 'all' } },
+    { type: 'play', cardId, pos: origin.pos },
+    { type: 'stack', objId: cardId, targetId: stackId },
+    { type: 'delete', objId: cardId },
+  ];
+
+  it('ほかの席の手札は、見える人の変更・卓に出す・重ねる・消すができない', () => {
+    const { state, cardId, stackId } = dealtToSeat1();
+    for (const body of ops(cardId, stackId)) {
+      const r = apply(state, cmd(2, body), seededRng(1));
+      expect(r, body.type).toMatchObject({ ok: false, error: 'not-your-card' });
+    }
+  });
+
+  it('持ち主の席（兼任中のホストがその席として操作する場合も含む）はできる', () => {
+    const { state, cardId, stackId } = dealtToSeat1();
+    for (const body of ops(cardId, stackId)) {
+      expect(apply(state, cmd(1, body), seededRng(1)).ok, body.type).toBe(true);
+    }
+  });
+});
+
 describe('つかみと失敗', () => {
   it('他の席がつかんでいるカードを動かそうとすると失敗する', () => {
     const { state, stackId } = withDeck(2);

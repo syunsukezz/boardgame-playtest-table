@@ -3,6 +3,7 @@ import { h } from './dom';
 
 const REASONS: Record<string, string> = {
   'held-by-other': 'ほかの人がつかんでいます',
+  'not-your-card': 'ほかの席の手札は操作できません',
   'not-found': '対象が見つかりません（もう無くなったかもしれません）',
   'invalid-target': 'そこにはその操作ができません',
   'invalid-args': '操作の内容が正しくありません',
