@@ -40,7 +40,9 @@ export class AssetReceiver {
     const p = this.partials.get(msg.hash);
     if (!p) return null;
     if (msg.type === 'asset-chunk') {
-      p.parts[msg.index] = msg.data;
+      // PeerJS のバイナリ送信は Uint8Array を ArrayBuffer にして届けるので、ここでそろえる。
+      const data: unknown = msg.data;
+      p.parts[msg.index] = data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
       return null;
     }
     this.partials.delete(msg.hash);

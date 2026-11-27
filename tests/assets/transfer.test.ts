@@ -31,6 +31,21 @@ describe('分割送信', () => {
   });
 });
 
+describe('PeerJS 経由の受信', () => {
+  it('分割データが ArrayBuffer で届いても、元のバイト列に組み立てられる', async () => {
+    const bytes = new Uint8Array(150_000).map((_, i) => (i * 7) % 256);
+    const asset: StoredAsset = { hash: await sha256Hex(bytes), mime: 'image/png', bytes };
+    const rx = new AssetReceiver();
+    let out: StoredAsset | null = null;
+    for (const m of chunkAsset(asset)) {
+      // PeerJS の binary 直列化は Uint8Array を ArrayBuffer にして届ける
+      const wire = m.type === 'asset-chunk' ? { ...m, data: m.data.slice().buffer as unknown as Uint8Array } : m;
+      out = rx.handle(wire) ?? out;
+    }
+    expect(await sha256Hex(out!.bytes)).toBe(asset.hash);
+  });
+});
+
 describe('必要な画像', () => {
   it('受け手(席2)に配ったカードの表は席2の集合にだけ入り、裏は両方に入る', () => {
     const origin = { pos: { x: 0, y: 0, z: 0 }, rot: 0 };
