@@ -238,6 +238,14 @@ describe('ログに流す出来事', () => {
     expect(r.log).toEqual([{ type: 'roll', seat: 3, dieId, value: 5 }]);
   });
 
+  it('サイコロは止まった位置と向きが渡されれば、そこへ移る', () => {
+    const s = run(emptyState(), 0, { type: 'spawnDie', placement: origin }).state;
+    const dieId = Object.keys(s.objects)[0]!;
+    const rest = { pos: { x: 2, y: 0, z: -1 }, rot: 0.5 };
+    const r = run(s, 0, { type: 'roll', dieId, outcome: { value: 3, rest } });
+    expect(r.state.objects[dieId]).toMatchObject({ value: 3, placement: rest });
+  });
+
   it('手札から卓に出すとログの出来事を返す', () => {
     const { state, stackId } = withDeck(2);
     const s1 = run(state, 1, { type: 'draw', stackId, count: 1 }).state;

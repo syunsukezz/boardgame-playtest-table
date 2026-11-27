@@ -5,7 +5,7 @@ import { diffViews, isEmptyPatch } from '../core/diff';
 import { formatLog, type SeatName } from '../core/log';
 import { project, type View, type Viewer } from '../core/project';
 import { cryptoRng, randomId, randomInt, type Rng } from '../core/rng';
-import { emptyState, type ObjectId, type SeatId, type TableState, type Vec3 } from '../core/state';
+import { emptyState, type ObjectId, type Placement, type SeatId, type TableState, type Vec3 } from '../core/state';
 import type { AssetStore } from '../assets/store';
 import { AssetSendTracker, chunkAsset, neededAssetHashes } from '../assets/transfer';
 import { sanitizeChat } from './chat';
@@ -27,7 +27,7 @@ export interface HostSessionOptions {
   assets: AssetStore;
   rng?: Rng;
   seatName?: SeatName;
-  rollDice?: (dieId: string) => { value: number; keyframes?: number[] };
+  rollDice?: (dieId: string) => { value: number; keyframes?: number[]; rest?: Placement };
   clock?: Clock;
 }
 
@@ -61,7 +61,7 @@ export class HostSession {
   private readonly rng: Rng;
   private readonly clock: Clock;
   private readonly seatName: SeatName;
-  private readonly rollDice: (dieId: string) => { value: number; keyframes?: number[] };
+  private readonly rollDice: (dieId: string) => { value: number; keyframes?: number[]; rest?: Placement };
   private activeSeat: SeatId = HOST_SEAT;
   private readonly grabTouched = new Map<ObjectId, number>();
   private readonly drags = new Map<ObjectId, DragThrottle>();

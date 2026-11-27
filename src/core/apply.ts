@@ -174,6 +174,8 @@ function run(state: TableState, cmd: Command, rng: Rng, log: LogEvent[]): void {
       const value = cmd.outcome?.value ?? 1 + randomInt(rng, 6);
       if (!Number.isInteger(value) || value < 1 || value > 6) fail('invalid-args');
       die.value = value;
+      // 転がって止まった位置と向き。無ければ元の場所のまま。
+      if (cmd.outcome?.rest) die.placement = clonePlacement(cmd.outcome.rest);
       log.push({ type: 'roll', seat, dieId: die.id, value });
       return;
     }

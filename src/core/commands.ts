@@ -29,7 +29,7 @@ export type CommandBody =
   | { type: 'deal'; stackId: ObjectId; count: number; seats: SeatId[]; visibility: DealVisibility }
   | { type: 'setVisibility'; cardId: ObjectId; visibility: Visibility }
   /** outcome はホストが決めて埋める（KTD7）。参加者が送った値は使わない。 */
-  | { type: 'roll'; dieId: ObjectId; outcome?: { value: number; keyframes?: number[] } }
+  | { type: 'roll'; dieId: ObjectId; outcome?: { value: number; keyframes?: number[]; rest?: Placement } }
   | { type: 'spawnDeck'; cards: NewCardSpec[]; placement: Placement }
   | { type: 'spawnBoard'; imageHash: string; width: number; depth: number; placement: Placement }
   | { type: 'spawnPiece'; shape: PieceShape; color: string; placement: Placement }
