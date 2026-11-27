@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import type { CommandBody } from '../core/commands';
 import type { View } from '../core/project';
 import { MAX_SEATS, seatLabel, type Vec3 } from '../core/state';
-import { DIE_FACE_NORMALS } from '../dice/faces';
+import { topFace } from '../dice/faces';
 import { KEYFRAME_STRIDE, samplePose } from '../dice/playback';
 import { CameraRig } from './camera';
 import {
@@ -65,32 +65,11 @@ const ROLL_SETTLE_MS = 1500;
 export function dieRestPose(keyframes: number[]): { pos: Vec3; rot: number; value: number } {
   const n = keyframes.length - KEYFRAME_STRIDE;
   const q = new THREE.Quaternion(keyframes[n + 4], keyframes[n + 5], keyframes[n + 6], keyframes[n + 7]).normalize();
-  const value = topFaceOf(q);
+  const value = topFace(q);
   const c = new THREE.Quaternion().setFromEuler(dieRotationFor(value));
   const m = q.clone().multiply(c.invert());
   const v = new THREE.Vector3(1, 0, 0).applyQuaternion(m);
   return { pos: { x: keyframes[n + 1]!, y: 0, z: keyframes[n + 3]! }, rot: Math.atan2(-v.z, v.x), value };
-}
-
-// DIE_FACE_VALUES と同じ並び（+x, -x, +y, -y, +z, -z）
-const FACE_NORMALS = DIE_FACE_NORMALS.map(([x, y, z]) => new THREE.Vector3(x, y, z));
-
-/**
- * 回転 q で上を向く面の目。
- * dice/faces.ts の topFace とは回転の計算式が異なり、斜めの姿勢では結果が食い違うことがあるため、
- * 振る舞いを変えないようにここでは three.js の回転のまま残している。
- */
-function topFaceOf(q: THREE.Quaternion): number {
-  let best = 0;
-  let bestY = -Infinity;
-  FACE_NORMALS.forEach((nv, i) => {
-    const y = nv.clone().applyQuaternion(q).y;
-    if (y > bestY) {
-      bestY = y;
-      best = i;
-    }
-  });
-  return DIE_FACE_VALUES[best]!;
 }
 
 const DRAG_LIFT = 0.25;

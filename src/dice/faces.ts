@@ -35,7 +35,9 @@ export function topFaceInfo(q: Quat): { value: number; dot: number } {
     // 回転後ベクトルの y 成分だけを計算する
     const tx = 2 * (q.y * z - q.z * y);
     const tz = 2 * (q.x * y - q.y * x);
-    const ry = y + q.w * (q.z * x - q.x * z) + (q.z * tx - q.x * tz);
+    // v' = v + w·t + q×t（t = 2(q×v)）の y 成分。t.y = 2(q.z·x − q.x·z)
+    const ty = 2 * (q.z * x - q.x * z);
+    const ry = y + q.w * ty + (q.z * tx - q.x * tz);
     if (ry > bestDot) {
       bestDot = ry;
       best = i;
